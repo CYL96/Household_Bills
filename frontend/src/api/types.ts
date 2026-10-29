@@ -1,0 +1,90 @@
+export type TransactionKind = 'income' | 'expense'
+
+export interface User {
+  id: number
+  username: string
+  is_admin: boolean
+}
+
+export interface Household {
+  id: number
+  name: string
+}
+
+export interface MeResponse {
+  user: User | null
+  household?: Household | null
+  members?: User[]
+}
+
+export interface LoginPayload {
+  username: string
+  password: string
+}
+
+export interface CreateUserPayload {
+  username: string
+  password: string
+}
+
+export interface Account {
+  id: number
+  name: string
+  opening_balance: string
+  balance: string
+}
+
+export interface AccountPayload {
+  name: string
+  opening_balance: string
+}
+
+export interface Transaction {
+  id: number
+  account: number
+  account_name: string
+  kind: TransactionKind
+  amount: string
+  category: string
+  date: string
+  note: string
+  created_by: number
+  created_by_name: string
+}
+
+export interface TransactionPayload {
+  account: number
+  kind: TransactionKind
+  amount: string
+  category: string
+  date: string
+  note?: string
+}
+
+export interface TransactionFilters {
+  month?: string
+  account?: number
+  kind?: TransactionKind
+  q?: string
+}
+
+export interface SummaryCategory {
+  category: string
+  amount: string
+}
+
+export interface SummaryDay {
+  date: string
+  income: string
+  expense: string
+}
+
+export interface Summary {
+  month: string
+  income: string
+  expense: string
+  net: string
+  total_balance: string
+  categories: SummaryCategory[]
+  daily: SummaryDay[]
+}

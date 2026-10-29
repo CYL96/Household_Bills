@@ -1,0 +1,9 @@
+.git
+.env
+.env.*
+node_modules
+**/node_modules
+frontend/dist
+backend/household-bills
+backend/server
+*.log

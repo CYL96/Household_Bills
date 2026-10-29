@@ -1,0 +1,30 @@
+services:
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: household_bills
+      POSTGRES_USER: household_bills
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U household_bills -d household_bills"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+  app:
+    build: .
+    ports:
+      - "127.0.0.1:${PORT:-8080}:8000"
+    environment:
+      DATABASE_URL: postgres://household_bills:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@db:5432/household_bills?sslmode=disable
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
+      COOKIE_SECURE: ${COOKIE_SECURE:-true}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-}
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+volumes:
+  postgres_data:
