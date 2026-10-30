@@ -530,7 +530,7 @@ func TestAuthSessionAndRemovedRegistration(t *testing.T) {
 
 func TestProtectedRequestsClassifyMissingSessionBeforeCSRF(t *testing.T) {
 	env := newTestEnv(t)
-	accountBody := map[string]any{"name": "不应创建", "opening_balance": "0.00"}
+	accountBody := map[string]any{"name": "不应创建", "balance": "0.00"}
 
 	// A protected mutation with neither a session nor a CSRF token must be
 	// reported as unauthenticated so clients can clear stale auth state.
@@ -741,7 +741,7 @@ func TestAdminUserManagement(t *testing.T) {
 		t.Fatalf("管理员家庭应有 3 名成员，实际 %d", got)
 	}
 	account := admin.object(t, http.MethodPost, "/api/accounts/",
-		map[string]any{"name": "家庭账户", "opening_balance": "10.00"}, http.StatusCreated)
+		map[string]any{"name": "家庭账户", "balance": "10.00"}, http.StatusCreated)
 	accountID := jsonInt64(t, account["id"])
 	aliceAccounts := alice.array(t, http.MethodGet, "/api/accounts/", nil, http.StatusOK)
 	if len(aliceAccounts) != 1 || jsonInt64(t, aliceAccounts[0]["id"]) != accountID {
@@ -1111,9 +1111,11 @@ func TestBootstrapAdminPreservesExistingHousehold(t *testing.T) {
 	legacyAccounts := legacy.array(t, http.MethodGet, "/api/accounts/", nil, http.StatusOK)
 	if len(legacyAccounts) != 1 ||
 		mustString(t, legacyAccounts[0]["name"]) != "旧账户" ||
-		mustString(t, legacyAccounts[0]["opening_balance"]) != "123.45" ||
 		mustString(t, legacyAccounts[0]["balance"]) != "123.45" {
 		t.Fatalf("旧账本数据应完整保留: %s", mustJSON(t, legacyAccounts))
+	}
+	if _, exists := legacyAccounts[0]["opening_balance"]; exists {
+		t.Fatalf("账户响应不应再暴露期初余额: %s", mustJSON(t, legacyAccounts))
 	}
 }
 
@@ -1130,9 +1132,9 @@ func TestHouseholdIsolationAndSharedMembers(t *testing.T) {
 	}
 
 	adminAccount := admin.object(t, http.MethodPost, "/api/accounts/",
-		map[string]any{"name": "甲现金", "opening_balance": "0.00"}, http.StatusCreated)
+		map[string]any{"name": "甲现金", "balance": "0.00"}, http.StatusCreated)
 	bobAccount := bob.object(t, http.MethodPost, "/api/accounts/",
-		map[string]any{"name": "乙银行卡", "opening_balance": "0.00"}, http.StatusCreated)
+		map[string]any{"name": "乙银行卡", "balance": "0.00"}, http.StatusCreated)
 	adminAccountID := jsonInt64(t, adminAccount["id"])
 	bobAccountID := jsonInt64(t, bobAccount["id"])
 
@@ -1263,26 +1265,29 @@ func TestBalanceAndSummaryLifecycle(t *testing.T) {
 	client := env.loginUser(t, "alice", strongPassword)
 
 	mainAccount := client.object(t, http.MethodPost, "/api/accounts/",
-		map[string]any{"name": "日常账户", "opening_balance": "100.00"}, http.StatusCreated)
+		map[string]any{"name": "日常账户", "balance": "100.00"}, http.StatusCreated)
 	mainAccountID := jsonInt64(t, mainAccount["id"])
-	if mustString(t, mainAccount["opening_balance"]) != "100.00" ||
-		mustString(t, mainAccount["balance"]) != "100.00" {
+	if mustString(t, mainAccount["balance"]) != "100.00" {
 		t.Fatalf("账户金额格式错误: %s", mustJSON(t, mainAccount))
 	}
+	if _, exists := mainAccount["opening_balance"]; exists {
+		t.Fatalf("账户响应不应再暴露期初余额: %s", mustJSON(t, mainAccount))
+	}
 	creditAccount := client.object(t, http.MethodPost, "/api/accounts/",
-		map[string]any{"name": "信用卡", "opening_balance": "-50.00"}, http.StatusCreated)
+		map[string]any{"name": "信用卡", "balance": "-50.00"}, http.StatusCreated)
 	creditAccountID := jsonInt64(t, creditAccount["id"])
-	if mustString(t, creditAccount["opening_balance"]) != "-50.00" ||
-		mustString(t, creditAccount["balance"]) != "-50.00" {
-		t.Fatalf("负期初余额应被接受: %s", mustJSON(t, creditAccount))
+	if mustString(t, creditAccount["balance"]) != "-50.00" {
+		t.Fatalf("负当前余额应被接受: %s", mustJSON(t, creditAccount))
 	}
 
-	client.do(http.MethodPost, "/api/accounts/",
-		map[string]any{"name": "坏账户", "opening_balance": "1.234"}).
-		expect(t, http.StatusBadRequest)
-	client.do(http.MethodPost, "/api/accounts/",
-		map[string]any{"name": "坏账户", "opening_balance": "10000000000.00"}).
-		expect(t, http.StatusBadRequest)
+	for _, balance := range []any{"1.234", "10000000000.00", "", nil} {
+		response := client.do(http.MethodPost, "/api/accounts/",
+			map[string]any{"name": "坏账户", "balance": balance})
+		response.expect(t, http.StatusBadRequest)
+		if _, exists := response.object(t)["balance"]; !exists {
+			t.Fatalf("非法余额 %#v 应返回 balance 字段错误: %s", balance, string(response.body))
+		}
+	}
 
 	invalidTransactions := []map[string]any{
 		{"account": mainAccountID, "kind": "expense", "amount": "0.00", "category": "餐饮", "date": "2026-10-01T00:00:00"},
@@ -1418,23 +1423,19 @@ func TestBalanceAndSummaryLifecycle(t *testing.T) {
 		t.Fatalf("修改支出后分类错误: %s", mustJSON(t, categories))
 	}
 
-	client.object(t, http.MethodPatch, fmt.Sprintf("/api/accounts/%d/", mainAccountID),
-		map[string]any{"opening_balance": "200.00"}, http.StatusOK)
-	summary = client.object(t, http.MethodGet, "/api/summary/?month=2026-10", nil, http.StatusOK)
-	if mustString(t, summary["total_balance"]) != "160.00" {
-		t.Fatalf("修改期初余额后总余额错误: %s", mustJSON(t, summary))
-	}
-	accounts = client.array(t, http.MethodGet, "/api/accounts/", nil, http.StatusOK)
-	if mustString(t, accounts[0]["balance"]) != "210.00" {
-		t.Fatalf("修改期初余额后账户余额错误: %s", mustJSON(t, accounts[0]))
-	}
-
-	// balance is derived and cannot be written directly.
 	patchedAccount := client.object(t, http.MethodPatch,
 		fmt.Sprintf("/api/accounts/%d/", mainAccountID),
-		map[string]any{"balance": "999999.99"}, http.StatusOK)
-	if mustString(t, patchedAccount["balance"]) != "210.00" {
-		t.Fatalf("余额不应被直接写入: %s", mustJSON(t, patchedAccount))
+		map[string]any{"balance": "200.00"}, http.StatusOK)
+	if mustString(t, patchedAccount["balance"]) != "200.00" {
+		t.Fatalf("写入当前余额后账户余额错误: %s", mustJSON(t, patchedAccount))
+	}
+	summary = client.object(t, http.MethodGet, "/api/summary/?month=2026-10", nil, http.StatusOK)
+	if mustString(t, summary["total_balance"]) != "150.00" {
+		t.Fatalf("校正当前余额后总余额错误: %s", mustJSON(t, summary))
+	}
+	accounts = client.array(t, http.MethodGet, "/api/accounts/", nil, http.StatusOK)
+	if mustString(t, accounts[0]["balance"]) != "200.00" {
+		t.Fatalf("校正当前余额后账户余额错误: %s", mustJSON(t, accounts[0]))
 	}
 
 	client.do(http.MethodDelete, fmt.Sprintf("/api/transactions/%d/", expenseID), nil).
@@ -1444,13 +1445,13 @@ func TestBalanceAndSummaryLifecycle(t *testing.T) {
 		t.Fatalf("删除后十月应有 1 条交易，实际 %d", len(october))
 	}
 	accounts = client.array(t, http.MethodGet, "/api/accounts/", nil, http.StatusOK)
-	if mustString(t, accounts[0]["balance"]) != "240.00" {
+	if mustString(t, accounts[0]["balance"]) != "230.00" {
 		t.Fatalf("删除支出后账户余额错误: %s", mustJSON(t, accounts[0]))
 	}
 	summary = client.object(t, http.MethodGet, "/api/summary/?month=2026-10", nil, http.StatusOK)
 	if mustString(t, summary["expense"]) != "0.00" ||
 		mustString(t, summary["net"]) != "50.00" ||
-		mustString(t, summary["total_balance"]) != "190.00" {
+		mustString(t, summary["total_balance"]) != "180.00" {
 		t.Fatalf("删除支出后汇总错误: %s", mustJSON(t, summary))
 	}
 	if len(mustSlice(t, summary["categories"])) != 0 {
@@ -1473,7 +1474,7 @@ func TestTransactionSecondPrecision(t *testing.T) {
 	client := env.loginUser(t, "alice", strongPassword)
 
 	account := client.object(t, http.MethodPost, "/api/accounts/",
-		map[string]any{"name": "秒级账户", "opening_balance": "0.00"}, http.StatusCreated)
+		map[string]any{"name": "秒级账户", "balance": "0.00"}, http.StatusCreated)
 	accountID := jsonInt64(t, account["id"])
 
 	invalidDates := []string{
@@ -1655,9 +1656,9 @@ func TestTransferLifecycle(t *testing.T) {
 	client := env.loginUser(t, "alice", strongPassword)
 
 	source := client.object(t, http.MethodPost, "/api/accounts/",
-		map[string]any{"name": "储蓄卡", "opening_balance": "1000.00"}, http.StatusCreated)
+		map[string]any{"name": "储蓄卡", "balance": "1000.00"}, http.StatusCreated)
 	target := client.object(t, http.MethodPost, "/api/accounts/",
-		map[string]any{"name": "旅行钱包", "opening_balance": "100.00"}, http.StatusCreated)
+		map[string]any{"name": "旅行钱包", "balance": "100.00"}, http.StatusCreated)
 	sourceID := jsonInt64(t, source["id"])
 	targetID := jsonInt64(t, target["id"])
 
@@ -1665,7 +1666,7 @@ func TestTransferLifecycle(t *testing.T) {
 	_, _ = env.seedUser(t, "外家", "bob", strongPassword, false)
 	bob := env.loginUser(t, "bob", strongPassword)
 	foreignAccount := bob.object(t, http.MethodPost, "/api/accounts/",
-		map[string]any{"name": "外部账户", "opening_balance": "50.00"}, http.StatusCreated)
+		map[string]any{"name": "外部账户", "balance": "50.00"}, http.StatusCreated)
 	foreignAccountID := jsonInt64(t, foreignAccount["id"])
 
 	invalidTransfers := []map[string]any{

@@ -170,12 +170,11 @@ func positiveID(raw string) (int64, bool) {
 
 func accountResponse(account store.Account) gin.H {
 	return gin.H{
-		"id":              account.ID,
-		"name":            account.Name,
-		"opening_balance": money.Format(account.OpeningBalanceCents),
-		"balance":         money.Format(account.BalanceCents),
-		"owner":           account.OwnerID,
-		"owner_name":      account.OwnerName,
+		"id":         account.ID,
+		"name":       account.Name,
+		"balance":    money.Format(account.BalanceCents),
+		"owner":      account.OwnerID,
+		"owner_name": account.OwnerName,
 	}
 }
 

@@ -28,7 +28,7 @@ const PUBLIC_OWNER_VALUE = 0
 
 const form = reactive({
   name: '',
-  opening_balance: 0 as number | undefined,
+  balance: 0 as number | undefined,
   owner: null as number | null,
 })
 
@@ -108,11 +108,11 @@ const rules: FormRules = {
       trigger: ['blur', 'change'],
     },
   ],
-  opening_balance: [
+  balance: [
     {
       validator: (_rule, value, callback) => {
         if (value === undefined || value === null || value === '') {
-          callback(new Error('请输入期初余额，可填写 0'))
+          callback(new Error('请输入当前余额，可填写 0'))
           return
         }
         const amount = Number(value)
@@ -135,10 +135,10 @@ function resetForm(): void {
   errorMessage.value = ''
   if (props.account) {
     form.name = props.account.name
-    form.opening_balance = Number(props.account.opening_balance)
+    form.balance = Number(props.account.balance)
   } else {
     form.name = ''
-    form.opening_balance = 0
+    form.balance = 0
   }
   form.owner = props.account?.owner ?? null
   void nextTick(() => {
@@ -173,7 +173,7 @@ async function submit(): Promise<void> {
   try {
     const payload: AccountPayload = {
       name: form.name.trim(),
-      opening_balance: decimalString(form.opening_balance),
+      balance: decimalString(form.balance),
     }
 
     // 新建时显式发送归属（null 即公共账户）；编辑时仅在变更后发送，
@@ -239,14 +239,14 @@ async function submit(): Promise<void> {
         />
       </el-form-item>
 
-      <el-form-item label="期初余额（元）" prop="opening_balance">
+      <el-form-item label="当前余额（元）" prop="balance">
         <el-input-number
-          v-model="form.opening_balance"
+          v-model="form.balance"
           :precision="2"
           :step="100"
           :controls="false"
           placeholder="0.00"
-          aria-label="期初余额（元）"
+          aria-label="当前余额（元）"
         />
       </el-form-item>
 
@@ -268,7 +268,7 @@ async function submit(): Promise<void> {
       </el-form-item>
 
       <p class="account-hint">
-        期初余额可以为负数，例如信用卡待还金额。当前余额由期初余额与全部收支自动计算，不能直接修改。账户归属只用于标记这个钱包由谁使用，可选“公共账户”或普通家庭成员；选择“公共账户”时全家成员仍可共同使用。
+        当前余额可以为负数，例如信用卡待还金额。保存后，今后的收入、支出和账户转账都会在此基础上自动更新余额。账户归属只用于标记这个钱包由谁使用，可选“公共账户”或普通家庭成员；选择“公共账户”时全家成员仍可共同使用。
       </p>
     </el-form>
 

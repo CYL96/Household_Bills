@@ -13,6 +13,7 @@ var (
 	ErrInvalidOwner              = errors.New("账户归属成员不存在")
 	ErrInvalidAccount            = errors.New("账户不存在")
 	ErrInvalidTransfer           = errors.New("转入账户无效")
+	ErrBalanceOutOfRange         = errors.New("余额超出允许范围")
 	ErrTransferAccountNotAllowed = errors.New("非转账交易不能设置转入账户")
 	ErrUsernameTaken             = errors.New("用户名已被使用")
 	ErrPasswordChanged           = errors.New("登录凭据已变更")
@@ -122,14 +123,16 @@ type Transaction struct {
 	CreatedByName       string
 }
 
-// AccountUpdate leaves fields nil when they were omitted. OwnerSet
-// distinguishes an omitted owner from an explicit null, since an explicit null
-// must make the wallet public while an omitted field preserves the owner.
+// AccountUpdate leaves fields nil when they were omitted. Balance carries the
+// requested current balance; the store derives the hidden opening balance from
+// the ledger. OwnerSet distinguishes an omitted owner from an explicit null,
+// since an explicit null must make the wallet public while an omitted field
+// preserves the owner.
 type AccountUpdate struct {
-	Name           *string
-	OpeningBalance *int64
-	OwnerID        *int64
-	OwnerSet       bool
+	Name     *string
+	Balance  *int64
+	OwnerID  *int64
+	OwnerSet bool
 }
 
 type TransactionInput struct {

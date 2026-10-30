@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -83,22 +84,29 @@ func (s *Store) CreateTransaction(ctx context.Context, householdID, userID int64
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	var accountName string
-	err = tx.QueryRow(ctx,
-		"SELECT name FROM accounts WHERE id = $1 AND household_id = $2",
-		input.AccountID, householdID).Scan(&accountName)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return Transaction{}, ErrInvalidAccount
+	transferAccountID := input.TransferAccountID
+	accountIDs := [2]int64{input.AccountID}
+	accountCount := 1
+	if input.Kind == "transfer" && transferAccountID != nil &&
+		*transferAccountID > 0 && *transferAccountID != input.AccountID {
+		accountIDs[accountCount] = *transferAccountID
+		accountCount++
+	}
+	missingID, err := lockAccounts(ctx, tx, householdID, accountIDs[:accountCount]...)
+	if errors.Is(err, ErrInvalidAccount) {
+		if missingID == input.AccountID {
+			return Transaction{}, ErrInvalidAccount
+		}
+		return Transaction{}, ErrInvalidTransfer
 	}
 	if err != nil {
-		return Transaction{}, fmt.Errorf("查询账户失败: %w", err)
+		return Transaction{}, err
 	}
 
-	transferAccountID := input.TransferAccountID
 	if input.Kind == "transfer" {
-		if _, err := resolveTransferAccountName(
-			ctx, tx, householdID, input.AccountID, transferAccountID); err != nil {
-			return Transaction{}, err
+		if transferAccountID == nil || *transferAccountID <= 0 ||
+			*transferAccountID == input.AccountID {
+			return Transaction{}, ErrInvalidTransfer
 		}
 		input.Category = TransferCategory
 	} else if transferAccountID != nil {
@@ -141,18 +149,7 @@ func (s *Store) UpdateTransaction(ctx context.Context, householdID, transactionI
 
 	next := current
 	if patch.AccountID != nil {
-		var accountName string
-		err := tx.QueryRow(ctx,
-			"SELECT name FROM accounts WHERE id = $1 AND household_id = $2",
-			*patch.AccountID, householdID).Scan(&accountName)
-		if errors.Is(err, pgx.ErrNoRows) {
-			return Transaction{}, ErrInvalidAccount
-		}
-		if err != nil {
-			return Transaction{}, fmt.Errorf("查询账户失败: %w", err)
-		}
 		next.AccountID = *patch.AccountID
-		next.AccountName = accountName
 	}
 	if patch.Kind != nil {
 		next.Kind = *patch.Kind
@@ -174,12 +171,10 @@ func (s *Store) UpdateTransaction(ctx context.Context, householdID, transactionI
 		next.TransferAccountName = ""
 	}
 	if next.Kind == "transfer" {
-		transferAccountName, err := resolveTransferAccountName(
-			ctx, tx, householdID, next.AccountID, next.TransferAccountID)
-		if err != nil {
-			return Transaction{}, err
+		if next.TransferAccountID == nil || *next.TransferAccountID <= 0 ||
+			*next.TransferAccountID == next.AccountID {
+			return Transaction{}, ErrInvalidTransfer
 		}
-		next.TransferAccountName = transferAccountName
 		next.Category = TransferCategory
 	} else {
 		if patch.TransferAccountSet && patch.TransferAccountID != nil {
@@ -187,6 +182,49 @@ func (s *Store) UpdateTransaction(ctx context.Context, householdID, transactionI
 		}
 		next.TransferAccountID = nil
 		next.TransferAccountName = ""
+	}
+
+	accountIDs := [4]int64{current.AccountID, next.AccountID}
+	accountCount := 2
+	if current.TransferAccountID != nil {
+		accountIDs[accountCount] = *current.TransferAccountID
+		accountCount++
+	}
+	if next.TransferAccountID != nil {
+		accountIDs[accountCount] = *next.TransferAccountID
+		accountCount++
+	}
+	missingID, err := lockAccounts(ctx, tx, householdID, accountIDs[:accountCount]...)
+	if errors.Is(err, ErrInvalidAccount) {
+		if missingID == current.AccountID || missingID == next.AccountID {
+			return Transaction{}, ErrInvalidAccount
+		}
+		return Transaction{}, ErrInvalidTransfer
+	}
+	if err != nil {
+		return Transaction{}, err
+	}
+
+	if patch.AccountID != nil {
+		var accountName string
+		err := tx.QueryRow(ctx,
+			"SELECT name FROM accounts WHERE id = $1 AND household_id = $2",
+			next.AccountID, householdID).Scan(&accountName)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return Transaction{}, ErrInvalidAccount
+		}
+		if err != nil {
+			return Transaction{}, fmt.Errorf("查询账户失败: %w", err)
+		}
+		next.AccountName = accountName
+	}
+	if next.Kind == "transfer" {
+		transferAccountName, err := resolveTransferAccountName(
+			ctx, tx, householdID, next.AccountID, next.TransferAccountID)
+		if err != nil {
+			return Transaction{}, err
+		}
+		next.TransferAccountName = transferAccountName
 	}
 
 	_, err = tx.Exec(ctx, `
@@ -214,7 +252,28 @@ func (s *Store) UpdateTransaction(ctx context.Context, householdID, transactionI
 }
 
 func (s *Store) DeleteTransaction(ctx context.Context, householdID, transactionID int64) error {
-	tag, err := s.pool.Exec(ctx,
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("开启交易删除事务失败: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	current, err := getTransaction(ctx, tx, transactionID, householdID, true)
+	if err != nil {
+		return err
+	}
+
+	accountIDs := [2]int64{current.AccountID}
+	accountCount := 1
+	if current.TransferAccountID != nil {
+		accountIDs[accountCount] = *current.TransferAccountID
+		accountCount++
+	}
+	if _, err := lockAccounts(ctx, tx, householdID, accountIDs[:accountCount]...); err != nil {
+		return err
+	}
+
+	tag, err := tx.Exec(ctx,
 		"DELETE FROM transactions WHERE id = $1 AND household_id = $2",
 		transactionID, householdID)
 	if err != nil {
@@ -223,11 +282,48 @@ func (s *Store) DeleteTransaction(ctx context.Context, householdID, transactionI
 	if tag.RowsAffected() == 0 {
 		return ErrNotFound
 	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("提交交易删除失败: %w", err)
+	}
 	return nil
 }
 
-// resolveTransferAccountName validates that the destination account exists in
-// the same household and differs from the source account, returning its name.
+// lockAccounts locks the affected wallets in ascending id order before a
+// transaction mutation changes ledger rows. Every balance-changing writer uses
+// the same order, so wallet rows serialize balance corrections without
+// deadlocks or retries. It returns the id of the first missing wallet so the
+// caller can map the failure to the right request field.
+func lockAccounts(
+	ctx context.Context,
+	q dbQuerier,
+	householdID int64,
+	accountIDs ...int64,
+) (int64, error) {
+	sort.Slice(accountIDs, func(i, j int) bool {
+		return accountIDs[i] < accountIDs[j]
+	})
+	for i, accountID := range accountIDs {
+		if i > 0 && accountID == accountIDs[i-1] {
+			continue
+		}
+		var lockedID int64
+		err := q.QueryRow(ctx, `
+			SELECT id FROM accounts
+			WHERE id = $1 AND household_id = $2
+			FOR UPDATE`, accountID, householdID).Scan(&lockedID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return accountID, ErrInvalidAccount
+		}
+		if err != nil {
+			return 0, fmt.Errorf("锁定账户失败: %w", err)
+		}
+	}
+	return 0, nil
+}
+
+// resolveTransferAccountName returns the destination name after validating
+// that it differs from the source and belongs to the same household. The
+// caller holds the destination row lock, so the read cannot race a rename.
 func resolveTransferAccountName(
 	ctx context.Context,
 	q dbQuerier,

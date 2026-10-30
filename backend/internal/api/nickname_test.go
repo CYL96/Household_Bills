@@ -71,7 +71,7 @@ func TestUserNicknameDisplay(t *testing.T) {
 	}
 
 	account := admin.object(t, http.MethodPost, "/api/accounts/", map[string]any{
-		"name": "家庭账户", "opening_balance": "0.00",
+		"name": "家庭账户", "balance": "0.00",
 	}, http.StatusCreated)
 	blankClient := env.loginUser(t, "blank", strongPassword)
 	for _, testCase := range []struct {

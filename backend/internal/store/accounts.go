@@ -6,10 +6,16 @@ import (
 	"fmt"
 
 	"github.com/jackc/pgx/v5"
+
+	"household-bills/backend/internal/money"
 )
 
-const accountBalanceExpression = `
-	(a.opening_balance_cents::numeric + COALESCE((
+// accountNetExpression sums every ledger row that changes the wallet aliased
+// "a". It is shared by the derived balance and the opening-balance correction
+// so both always apply identical transfer semantics. Household scoping comes
+// from the wallet itself instead of an extra parameter.
+const accountNetExpression = `
+	COALESCE((
 		SELECT SUM(CASE
 		               WHEN t.kind = 'income' THEN t.amount_cents
 		               WHEN t.kind = 'transfer' AND t.transfer_account_id = a.id
@@ -17,8 +23,12 @@ const accountBalanceExpression = `
 		               ELSE -t.amount_cents
 		           END)
 		FROM transactions t
-		WHERE t.account_id = a.id OR t.transfer_account_id = a.id
-	), 0)::numeric)`
+		WHERE t.household_id = a.household_id
+		  AND (t.account_id = a.id OR t.transfer_account_id = a.id)
+	), 0)::numeric`
+
+const accountBalanceExpression = `(a.opening_balance_cents::numeric + ` +
+	accountNetExpression + `)`
 
 // accountSelect reads one wallet with its derived balance and optional owner
 // label. The user join deliberately keeps soft-deleted members so a departed
@@ -54,14 +64,15 @@ func (s *Store) ListAccounts(ctx context.Context, householdID int64) ([]Account,
 	return accounts, nil
 }
 
-// CreateAccount inserts a wallet. A non-nil owner must be an active non-admin
-// member of the same household; the shared row lock makes a concurrent soft
-// deletion wait until this transaction commits.
+// CreateAccount inserts a wallet whose opening balance starts at the requested
+// current balance. A non-nil owner must be an active non-admin member of the
+// same household; the shared row lock makes a concurrent soft deletion wait
+// until this transaction commits.
 func (s *Store) CreateAccount(
 	ctx context.Context,
 	householdID int64,
 	name string,
-	openingBalanceCents int64,
+	balanceCents int64,
 	ownerID *int64,
 ) (Account, error) {
 	tx, err := s.pool.Begin(ctx)
@@ -85,13 +96,13 @@ func (s *Store) CreateAccount(
 		INSERT INTO accounts (household_id, name, opening_balance_cents, owner_user_id)
 		VALUES ($1, $2, $3, $4)
 		RETURNING id, name, opening_balance_cents, owner_user_id`,
-		householdID, name, openingBalanceCents, ownerArg).
+		householdID, name, balanceCents, ownerArg).
 		Scan(&account.ID, &account.Name, &account.OpeningBalanceCents, &account.OwnerID)
 	if err != nil {
 		return Account{}, fmt.Errorf("创建账户失败: %w", err)
 	}
 	// A new wallet has no transactions yet, so its balance is its opening balance.
-	account.BalanceCents = openingBalanceCents
+	account.BalanceCents = balanceCents
 	account.OwnerName = ownerName
 
 	if err := tx.Commit(ctx); err != nil {
@@ -100,6 +111,10 @@ func (s *Store) CreateAccount(
 	return account, nil
 }
 
+// UpdateAccount applies a household-scoped patch. When Balance is set, the
+// wallet row is locked first and the ledger contribution is recomputed under
+// that lock, so the hidden opening balance stores exactly the requested
+// current balance minus the contribution.
 func (s *Store) UpdateAccount(ctx context.Context, householdID, accountID int64, update AccountUpdate) (Account, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -125,16 +140,29 @@ func (s *Store) UpdateAccount(ctx context.Context, householdID, accountID int64,
 	if update.Name != nil {
 		nameArg = *update.Name
 	}
-	var openingArg any
-	if update.OpeningBalance != nil {
-		openingArg = *update.OpeningBalance
-	}
 	var ownerArg any
 	if update.OwnerSet && update.OwnerID != nil {
 		if _, err := lockActiveAccountOwner(ctx, tx, householdID, *update.OwnerID); err != nil {
 			return Account{}, err
 		}
 		ownerArg = *update.OwnerID
+	}
+
+	var openingArg any
+	if update.Balance != nil {
+		balance := *update.Balance
+		if balance < -money.MaxCents || balance > money.MaxCents {
+			return Account{}, ErrBalanceOutOfRange
+		}
+		netCents, err := accountNetCents(ctx, tx, householdID, accountID)
+		if err != nil {
+			return Account{}, err
+		}
+		// Compare before subtracting so an extreme net can never overflow int64.
+		if netCents > balance+money.MaxCents || netCents < balance-money.MaxCents {
+			return Account{}, ErrBalanceOutOfRange
+		}
+		openingArg = balance - netCents
 	}
 
 	_, err = tx.Exec(ctx, `
@@ -159,6 +187,33 @@ func (s *Store) UpdateAccount(ctx context.Context, householdID, accountID int64,
 		return Account{}, fmt.Errorf("提交账户更新失败: %w", err)
 	}
 	return account, nil
+}
+
+// accountNetCents reads the ledger contribution that the derived balance adds
+// to the stored opening balance. Callers must hold the wallet row lock so the
+// result cannot change before the correction is written.
+func accountNetCents(
+	ctx context.Context,
+	q dbQuerier,
+	householdID, accountID int64,
+) (int64, error) {
+	var netText string
+	err := q.QueryRow(ctx, `
+		SELECT `+accountNetExpression+`::text
+		FROM accounts a
+		WHERE a.id = $1 AND a.household_id = $2`,
+		accountID, householdID).Scan(&netText)
+	if err != nil {
+		return 0, fmt.Errorf("读取账户收支失败: %w", err)
+	}
+	netCents, err := parseAggregateCents(netText)
+	if err != nil {
+		// A ledger sum outside int64 can never yield an in-range opening for
+		// any user-requestable current balance, so the correction itself is
+		// unrepresentable rather than an internal failure.
+		return 0, ErrBalanceOutOfRange
+	}
+	return netCents, nil
 }
 
 // lockActiveAccountOwner resolves the display name of an active non-admin

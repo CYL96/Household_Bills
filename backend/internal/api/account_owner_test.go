@@ -48,8 +48,8 @@ func TestAccountOwnerAssignment(t *testing.T) {
 	// both owner fields are always present on the wire.
 	publicWalletIDs := make([]int64, 0, 2)
 	for _, body := range []map[string]any{
-		{"name": "公共现金", "opening_balance": "10.00"},
-		{"name": "公共银行卡", "opening_balance": "20.00", "owner": nil},
+		{"name": "公共现金", "balance": "10.00"},
+		{"name": "公共银行卡", "balance": "20.00", "owner": nil},
 	} {
 		account := alice.object(t, http.MethodPost, "/api/accounts/", body, http.StatusCreated)
 		publicWalletIDs = append(publicWalletIDs, jsonInt64(t, account["id"]))
@@ -62,7 +62,7 @@ func TestAccountOwnerAssignment(t *testing.T) {
 	// A non-admin member may assign any active non-admin household member,
 	// including themself and another ordinary member.
 	aliceWallet := alice.object(t, http.MethodPost, "/api/accounts/", map[string]any{
-		"name": "小艾钱包", "opening_balance": "30.00", "owner": aliceID,
+		"name": "小艾钱包", "balance": "30.00", "owner": aliceID,
 	}, http.StatusCreated)
 	aliceWalletID := jsonInt64(t, aliceWallet["id"])
 	owner, ownerName := accountOwnerFields(t, aliceWallet)
@@ -128,14 +128,14 @@ func TestAccountOwnerAssignment(t *testing.T) {
 		t.Fatalf("显式成员 ID 应设置归属: %s", mustJSON(t, assigned))
 	}
 
-	// Omitting owner while changing the opening balance also preserves it.
+	// Omitting owner while changing the current balance also preserves it.
 	updated := admin.object(t, http.MethodPatch,
 		fmt.Sprintf("/api/accounts/%d/", aliceWalletID),
-		map[string]any{"opening_balance": "40.00"}, http.StatusOK)
+		map[string]any{"balance": "40.00"}, http.StatusOK)
 	owner, ownerName = accountOwnerFields(t, updated)
 	if owner == nil || jsonInt64(t, owner) != aliceID || ownerName != "小艾" ||
 		mustString(t, updated["balance"]) != "40.00" {
-		t.Fatalf("期初余额更新不应改变归属: %s", mustJSON(t, updated))
+		t.Fatalf("当前余额更新不应改变归属: %s", mustJSON(t, updated))
 	}
 
 	// The second owned wallet keeps its owner while another member edits it.
@@ -213,7 +213,7 @@ func TestAccountOwnerValidation(t *testing.T) {
 	}
 
 	wallet := alice.object(t, http.MethodPost, "/api/accounts/", map[string]any{
-		"name": "小艾钱包", "opening_balance": "12.34", "owner": aliceID,
+		"name": "小艾钱包", "balance": "12.34", "owner": aliceID,
 	}, http.StatusCreated)
 	walletID := jsonInt64(t, wallet["id"])
 
@@ -238,7 +238,7 @@ func TestAccountOwnerValidation(t *testing.T) {
 	// changes, leaving the wallet untouched.
 	adminPatch := alice.do(http.MethodPatch,
 		fmt.Sprintf("/api/accounts/%d/", walletID),
-		map[string]any{"name": "被篡改", "opening_balance": "99.99", "owner": adminID})
+		map[string]any{"name": "被篡改", "balance": "99.99", "owner": adminID})
 	adminPatch.expect(t, http.StatusBadRequest)
 	if _, exists := adminPatch.object(t)["owner"]; !exists {
 		t.Fatalf("管理员归属更新应返回 owner 字段错误: %s", string(adminPatch.body))
@@ -272,7 +272,7 @@ func TestAccountOwnerSoftDeletedMember(t *testing.T) {
 		map[string]any{"nickname": "艾丽丝"}, http.StatusOK)
 
 	wallet := alice.object(t, http.MethodPost, "/api/accounts/", map[string]any{
-		"name": "小艾钱包", "opening_balance": "20.00", "owner": aliceID,
+		"name": "小艾钱包", "balance": "20.00", "owner": aliceID,
 	}, http.StatusCreated)
 	walletID := jsonInt64(t, wallet["id"])
 
@@ -293,7 +293,7 @@ func TestAccountOwnerSoftDeletedMember(t *testing.T) {
 	// Editing a former member's wallet while omitting owner still works.
 	patched := bob.object(t, http.MethodPatch,
 		fmt.Sprintf("/api/accounts/%d/", walletID),
-		map[string]any{"name": "小艾的钱包", "opening_balance": "25.00"}, http.StatusOK)
+		map[string]any{"name": "小艾的钱包", "balance": "25.00"}, http.StatusOK)
 	owner, ownerName = accountOwnerFields(t, patched)
 	if owner == nil || jsonInt64(t, owner) != aliceID || ownerName != "艾丽丝" ||
 		mustString(t, patched["balance"]) != "25.00" {
@@ -352,11 +352,11 @@ func TestAccountOwnerLegacyAdminWallet(t *testing.T) {
 	// Seed wallets the way an older build could have: the API now rejects
 	// assigning an administrator, so the legacy state is written directly.
 	editableWallet := alice.object(t, http.MethodPost, "/api/accounts/", map[string]any{
-		"name": "历史管理员钱包", "opening_balance": "30.00",
+		"name": "历史管理员钱包", "balance": "30.00",
 	}, http.StatusCreated)
 	editableWalletID := jsonInt64(t, editableWallet["id"])
 	clearableWallet := alice.object(t, http.MethodPost, "/api/accounts/", map[string]any{
-		"name": "待清空管理员钱包", "opening_balance": "5.00",
+		"name": "待清空管理员钱包", "balance": "5.00",
 	}, http.StatusCreated)
 	clearableWalletID := jsonInt64(t, clearableWallet["id"])
 
@@ -383,7 +383,7 @@ func TestAccountOwnerLegacyAdminWallet(t *testing.T) {
 	// Omitting owner still edits the wallet and preserves the legacy owner.
 	patched := alice.object(t, http.MethodPatch,
 		fmt.Sprintf("/api/accounts/%d/", editableWalletID),
-		map[string]any{"name": "历史管理员账户", "opening_balance": "35.00"}, http.StatusOK)
+		map[string]any{"name": "历史管理员账户", "balance": "35.00"}, http.StatusOK)
 	owner, ownerName := accountOwnerFields(t, patched)
 	if owner == nil || jsonInt64(t, owner) != adminID || ownerName != adminUsername ||
 		mustString(t, patched["balance"]) != "35.00" {
@@ -393,7 +393,7 @@ func TestAccountOwnerLegacyAdminWallet(t *testing.T) {
 	// Explicitly resending the administrator is rejected atomically.
 	rejected := alice.do(http.MethodPatch,
 		fmt.Sprintf("/api/accounts/%d/", editableWalletID),
-		map[string]any{"name": "被篡改", "opening_balance": "99.99", "owner": adminID})
+		map[string]any{"name": "被篡改", "balance": "99.99", "owner": adminID})
 	rejected.expect(t, http.StatusBadRequest)
 	if _, exists := rejected.object(t)["owner"]; !exists {
 		t.Fatalf("历史管理员归属更新应返回 owner 字段错误: %s", string(rejected.body))
@@ -436,15 +436,15 @@ func TestAccountOwnerBalancesAndSharing(t *testing.T) {
 	bobID := jsonInt64(t, bobCreated["id"])
 
 	publicWallet := admin.object(t, http.MethodPost, "/api/accounts/", map[string]any{
-		"name": "公共账户", "opening_balance": "100.00",
+		"name": "公共账户", "balance": "100.00",
 	}, http.StatusCreated)
 	publicWalletID := jsonInt64(t, publicWallet["id"])
 	aliceWallet := admin.object(t, http.MethodPost, "/api/accounts/", map[string]any{
-		"name": "小艾钱包", "opening_balance": "50.00", "owner": aliceID,
+		"name": "小艾钱包", "balance": "50.00", "owner": aliceID,
 	}, http.StatusCreated)
 	aliceWalletID := jsonInt64(t, aliceWallet["id"])
 	bobWallet := alice.object(t, http.MethodPost, "/api/accounts/", map[string]any{
-		"name": "小鲍钱包", "opening_balance": "30.00", "owner": bobID,
+		"name": "小鲍钱包", "balance": "30.00", "owner": bobID,
 	}, http.StatusCreated)
 	bobWalletID := jsonInt64(t, bobWallet["id"])
 

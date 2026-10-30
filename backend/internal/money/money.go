@@ -20,7 +20,7 @@ var (
 )
 
 // Parse converts a decimal amount with at most two fractional digits to cents.
-// A leading minus sign is accepted (credit-card style opening balances).
+// A leading minus sign is accepted (credit-card style current balances).
 // Numbers are not parsed as float64 at any point.
 func Parse(s string) (int64, error) {
 	if s == "" || !utf8.ValidString(s) {

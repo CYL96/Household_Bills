@@ -7,21 +7,22 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"household-bills/backend/internal/money"
 	"household-bills/backend/internal/store"
 )
 
 const accountOwnerErrorMessage = "账户归属成员不存在。"
 
 type accountCreateRequest struct {
-	Name           string          `json:"name"`
-	OpeningBalance json.RawMessage `json:"opening_balance"`
-	Owner          json.RawMessage `json:"owner"`
+	Name    string          `json:"name"`
+	Balance json.RawMessage `json:"balance"`
+	Owner   json.RawMessage `json:"owner"`
 }
 
 type accountPatchRequest struct {
-	Name           *string         `json:"name"`
-	OpeningBalance json.RawMessage `json:"opening_balance"`
-	Owner          json.RawMessage `json:"owner"`
+	Name    *string         `json:"name"`
+	Balance json.RawMessage `json:"balance"`
+	Owner   json.RawMessage `json:"owner"`
 }
 
 func (a *API) handleListAccounts(c *gin.Context) {
@@ -60,13 +61,13 @@ func (a *API) handleCreateAccount(c *gin.Context) {
 		fields["name"] = []string{message}
 	}
 
-	openingBalance := int64(0)
-	if request.OpeningBalance != nil {
-		parsed, err := parseMoneyRaw(request.OpeningBalance)
+	balance := int64(0)
+	if request.Balance != nil {
+		parsed, err := parseMoneyRaw(request.Balance)
 		if err != nil {
-			fields["opening_balance"] = []string{moneyErrorMessage(err)}
+			fields["balance"] = []string{moneyErrorMessage(err)}
 		} else {
-			openingBalance = parsed
+			balance = parsed
 		}
 	}
 
@@ -80,7 +81,7 @@ func (a *API) handleCreateAccount(c *gin.Context) {
 	}
 
 	account, err := a.store.CreateAccount(
-		c.Request.Context(), auth.User.HouseholdID, name, openingBalance, ownerID)
+		c.Request.Context(), auth.User.HouseholdID, name, balance, ownerID)
 	if errors.Is(err, store.ErrInvalidOwner) {
 		abortFields(c, map[string][]string{"owner": {accountOwnerErrorMessage}})
 		return
@@ -120,12 +121,12 @@ func (a *API) handlePatchAccount(c *gin.Context) {
 			update.Name = &name
 		}
 	}
-	if request.OpeningBalance != nil {
-		openingBalance, err := parseMoneyRaw(request.OpeningBalance)
+	if request.Balance != nil {
+		balance, err := parseMoneyRaw(request.Balance)
 		if err != nil {
-			fields["opening_balance"] = []string{moneyErrorMessage(err)}
+			fields["balance"] = []string{moneyErrorMessage(err)}
 		} else {
-			update.OpeningBalance = &openingBalance
+			update.Balance = &balance
 		}
 	}
 
@@ -145,6 +146,10 @@ func (a *API) handlePatchAccount(c *gin.Context) {
 		c.Request.Context(), auth.User.HouseholdID, accountID, update)
 	if errors.Is(err, store.ErrInvalidOwner) {
 		abortFields(c, map[string][]string{"owner": {accountOwnerErrorMessage}})
+		return
+	}
+	if errors.Is(err, store.ErrBalanceOutOfRange) {
+		abortFields(c, map[string][]string{"balance": {moneyErrorMessage(money.ErrRange)}})
 		return
 	}
 	if errors.Is(err, store.ErrNotFound) {

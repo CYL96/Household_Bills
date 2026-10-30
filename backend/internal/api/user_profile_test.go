@@ -632,7 +632,7 @@ func TestUserDeletionPreservesHistory(t *testing.T) {
 	deleteeToken := deletee.cookieValue("sessionid")
 
 	account := admin.object(t, http.MethodPost, "/api/accounts/", map[string]any{
-		"name": "共享账户", "opening_balance": "0.00",
+		"name": "共享账户", "balance": "0.00",
 	}, http.StatusCreated)
 	accountID := jsonInt64(t, account["id"])
 	transaction := deletee.object(t, http.MethodPost, "/api/transactions/", map[string]any{

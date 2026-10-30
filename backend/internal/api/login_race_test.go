@@ -149,7 +149,7 @@ func TestAdminPasswordRotationRaceBlocksStaleLogin(t *testing.T) {
 		loginDone <- attemptLogin(client, adminUsername, strongPassword)
 	}()
 
-	waitForBlockedLogin(t, env)
+	waitForBlockedQuery(t, env)
 
 	if err := rotation.Commit(ctx); err != nil {
 		t.Fatalf("提交密码轮换事务失败: %v", err)
@@ -241,10 +241,9 @@ func attemptLogin(client *testClient, username, password string) loginRaceResult
 	return result
 }
 
-// waitForBlockedLogin waits until the concurrent login is visibly waiting on a
-// PostgreSQL lock, which proves it already verified the old hash and reached
-// the FOR UPDATE in CreateSession. The rotation transaction can then commit.
-func waitForBlockedLogin(t *testing.T, env *testEnv) {
+// waitForBlockedQuery waits until a concurrent request is visibly waiting on a
+// PostgreSQL lock, proving it reached the row lock under test.
+func waitForBlockedQuery(t *testing.T, env *testEnv) {
 	t.Helper()
 	deadline := time.Now().Add(30 * time.Second)
 	for {

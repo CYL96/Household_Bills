@@ -40,7 +40,6 @@ export interface UpdateUserPayload {
 export interface Account {
   id: number
   name: string
-  opening_balance: string
   balance: string
   owner: number | null
   owner_name: string
@@ -48,7 +47,8 @@ export interface Account {
 
 export interface AccountPayload {
   name: string
-  opening_balance: string
+  /** 当前余额；保存时由后端换算内部的初始数值。 */
+  balance: string
   /**
    * 新建时省略即为公共账户；修改时省略保持原归属。
    * null 明确表示公共账户，数字表示现有非管理员家庭成员的用户 ID。

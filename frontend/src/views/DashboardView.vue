@@ -435,7 +435,7 @@ const trendChartLabel = computed(() => {
         <StatCard
           label="家庭总余额"
           :amount="formatMoney(summary.total_balance)"
-          hint="期初余额 + 全部收入 − 全部支出；转账在账户间抵消"
+          hint="各账户当前余额合计；转账在账户间抵消"
           tone="balance"
         />
       </div>
