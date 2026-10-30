@@ -10,9 +10,14 @@ import (
 
 const accountBalanceExpression = `
 	(a.opening_balance_cents::numeric + COALESCE((
-		SELECT SUM(CASE WHEN t.kind = 'income' THEN t.amount_cents ELSE -t.amount_cents END)
+		SELECT SUM(CASE
+		               WHEN t.kind = 'income' THEN t.amount_cents
+		               WHEN t.kind = 'transfer' AND t.transfer_account_id = a.id
+		                   THEN t.amount_cents
+		               ELSE -t.amount_cents
+		           END)
 		FROM transactions t
-		WHERE t.account_id = a.id
+		WHERE t.account_id = a.id OR t.transfer_account_id = a.id
 	), 0)::numeric)`
 
 func (s *Store) ListAccounts(ctx context.Context, householdID int64) ([]Account, error) {

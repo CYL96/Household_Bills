@@ -89,7 +89,7 @@ watch(dataVersion, () => {
         <p class="page-eyebrow">资金账户</p>
         <h2>家里的钱，分别放在哪里</h2>
         <p class="page-heading__subtitle">
-          当前余额 = 期初余额 + 全部收入 − 全部支出，由收支记录自动计算。
+          当前余额 = 期初余额 + 全部收入 − 全部支出 + 转入 − 转出，由收支与转账记录自动计算。
         </p>
       </div>
       <div class="heading-actions">
@@ -137,7 +137,7 @@ watch(dataVersion, () => {
     <div v-else-if="accounts.length === 0" class="surface-card accounts-empty">
       <EmptyState
         title="还没有资金账户"
-        description="为家里的现金、银行卡或其他钱包各创建一个账户。添加后，收支余额会自动汇总。"
+        description="为家里的现金、银行卡或其他钱包各创建一个账户。添加后，收支与账户转账都会汇总到余额。"
         :icon="Wallet"
       >
         <template #actions>
@@ -206,7 +206,7 @@ watch(dataVersion, () => {
       </div>
 
       <p class="accounts-footnote">
-        家庭成员的每一笔收支都会同步到对应账户余额，期初余额可随时在编辑中修正。
+        家庭成员的每一笔收支和账户转账都会同步到对应账户余额，期初余额可随时在编辑中修正。
       </p>
     </template>
 

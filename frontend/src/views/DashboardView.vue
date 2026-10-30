@@ -3,9 +3,11 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import {
   ArrowRight,
+  Minus,
   PieChart,
   Plus,
   RefreshRight,
+  Switch,
   TrendCharts,
   Wallet,
   WarningFilled,
@@ -17,7 +19,7 @@ import StatCard from '../components/StatCard.vue'
 import { listAccounts } from '../api/accounts'
 import { getErrorMessage } from '../api/client'
 import { getSummary } from '../api/summary'
-import type { Account, Summary } from '../api/types'
+import type { Account, Summary, TransactionKind } from '../api/types'
 import { dataVersion } from '../stores/data'
 import {
   currentMonth,
@@ -89,10 +91,10 @@ watch(dataVersion, () => {
   void load()
 })
 
-function goNewTransaction(): void {
+function goNewTransaction(kind: TransactionKind = 'expense'): void {
   void router.push({
     name: 'transactions',
-    query: { new: '1', month: month.value },
+    query: { new: '1', kind, month: month.value },
   })
 }
 
@@ -251,13 +253,13 @@ const trendChartLabel = computed(() => {
 </script>
 
 <template>
-  <div class="dashboard">
+  <div class="dashboard has-mobile-fab">
     <div class="page-heading">
       <div class="page-heading__copy">
         <p class="page-eyebrow">家庭财务一览</p>
         <h2>{{ monthLabel }} · 收支概览</h2>
         <p class="page-heading__subtitle">
-          全部账户与收支由家庭成员共同维护，总余额始终按全时段计算。
+          全部账户与流水由家庭成员共同维护，总余额始终按全时段计算。
         </p>
       </div>
 
@@ -272,11 +274,78 @@ const trendChartLabel = computed(() => {
           class="month-picker"
           aria-label="选择汇总月份"
         />
-        <el-button type="primary" :icon="Plus" @click="goNewTransaction">
+        <el-button
+          type="primary"
+          :icon="Plus"
+          class="mobile-entry-fab"
+          @click="goNewTransaction('expense')"
+        >
           记一笔
         </el-button>
       </div>
     </div>
+
+    <section class="surface-card quick-entry" aria-label="快速记账">
+      <div class="quick-entry__head">
+        <div>
+          <p class="page-eyebrow">快速记账</p>
+          <h3>支出、收入或账户转账，随手记下</h3>
+        </div>
+        <span class="quick-entry__hint">选择类型，填写金额即可</span>
+      </div>
+      <div class="quick-entry__actions">
+        <button
+          type="button"
+          class="quick-action quick-action--expense"
+          @click="goNewTransaction('expense')"
+        >
+          <span class="quick-action__icon" aria-hidden="true">
+            <el-icon :size="18"><Minus /></el-icon>
+          </span>
+          <span class="quick-action__text">
+            <strong>支出</strong>
+            <small>记录一笔花销</small>
+          </span>
+          <el-icon class="quick-action__arrow" :size="14" aria-hidden="true">
+            <ArrowRight />
+          </el-icon>
+        </button>
+
+        <button
+          type="button"
+          class="quick-action quick-action--income"
+          @click="goNewTransaction('income')"
+        >
+          <span class="quick-action__icon" aria-hidden="true">
+            <el-icon :size="18"><Plus /></el-icon>
+          </span>
+          <span class="quick-action__text">
+            <strong>收入</strong>
+            <small>记录一笔进账</small>
+          </span>
+          <el-icon class="quick-action__arrow" :size="14" aria-hidden="true">
+            <ArrowRight />
+          </el-icon>
+        </button>
+
+        <button
+          type="button"
+          class="quick-action quick-action--transfer"
+          @click="goNewTransaction('transfer')"
+        >
+          <span class="quick-action__icon" aria-hidden="true">
+            <el-icon :size="18"><Switch /></el-icon>
+          </span>
+          <span class="quick-action__text">
+            <strong>转账</strong>
+            <small>账户之间划转</small>
+          </span>
+          <el-icon class="quick-action__arrow" :size="14" aria-hidden="true">
+            <ArrowRight />
+          </el-icon>
+        </button>
+      </div>
+    </section>
 
     <div
       v-if="loading"
@@ -330,13 +399,13 @@ const trendChartLabel = computed(() => {
           <p class="page-eyebrow">开始使用</p>
           <h3>先为家庭添加一个资金账户</h3>
           <p>
-            资金账户用于归集收入与支出。添加账户后，余额会随每一笔记录自动更新。
+            资金账户用于归集收入、支出与账户转账。添加账户后，余额会随每一笔记录自动更新。
           </p>
         </div>
         <div class="onboarding__side">
           <div class="onboarding__steps" aria-label="使用步骤">
             <span class="is-current">1. 添加账户</span>
-            <span>2. 记录收支</span>
+            <span>2. 记录收支与转账</span>
           </div>
           <el-button type="primary" :icon="Plus" @click="goNewAccount">
             添加资金账户
@@ -366,7 +435,7 @@ const trendChartLabel = computed(() => {
         <StatCard
           label="家庭总余额"
           :amount="formatMoney(summary.total_balance)"
-          hint="期初余额 + 全部收入 − 全部支出"
+          hint="期初余额 + 全部收入 − 全部支出；转账在账户间抵消"
           tone="balance"
         />
       </div>
@@ -386,11 +455,16 @@ const trendChartLabel = computed(() => {
           <EmptyState
             v-if="categories.length === 0"
             title="暂时没有支出分类"
-            description="所选月份还没有支出记录。记下一笔支出后，这里会显示分类占比。"
+            description="所选月份还没有支出记录。记下一笔支出后，这里会显示分类占比；账户转账不计入支出分类。"
             :icon="PieChart"
           >
             <template #actions>
-              <el-button type="primary" plain :icon="Plus" @click="goNewTransaction">
+              <el-button
+                type="primary"
+                plain
+                :icon="Plus"
+                @click="goNewTransaction('expense')"
+              >
                 记一笔支出
               </el-button>
             </template>
@@ -417,12 +491,17 @@ const trendChartLabel = computed(() => {
           <EmptyState
             v-if="daily.length === 0"
             title="暂时没有收支记录"
-            description="所选月份还没有任何收支。从第一笔记录开始，趋势会在这里呈现。"
+            description="所选月份还没有任何收支。从第一笔记录开始，趋势会在这里呈现；转账不计入收支走势。"
             :icon="TrendCharts"
           >
             <template #actions>
-              <el-button type="primary" plain :icon="Plus" @click="goNewTransaction">
-                记一笔收支
+              <el-button
+                type="primary"
+                plain
+                :icon="Plus"
+                @click="goNewTransaction('expense')"
+              >
+                记一笔支出
               </el-button>
             </template>
           </EmptyState>
@@ -437,10 +516,10 @@ const trendChartLabel = computed(() => {
 
       <div class="overview-foot">
         <button type="button" class="text-link" @click="goTransactions">
-          查看{{ monthLabel }}收支明细
+          查看{{ monthLabel }}流水明细
           <el-icon :size="14"><ArrowRight /></el-icon>
         </button>
-        <p>家庭总余额按全部账户计算，不受月份筛选影响。</p>
+        <p>家庭总余额按全部账户计算，不受月份筛选影响；账户转账在内部抵消。</p>
       </div>
     </div>
   </div>
@@ -453,6 +532,132 @@ const trendChartLabel = computed(() => {
 
 .month-picker {
   width: 152px;
+}
+
+.quick-entry {
+  padding: 16px 18px 17px;
+  margin-bottom: 16px;
+  background:
+    radial-gradient(520px 200px at 100% 0%, rgba(181, 138, 58, 0.1), transparent 72%),
+    var(--hb-surface);
+}
+
+.quick-entry__head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.quick-entry__head .page-eyebrow {
+  margin-bottom: 3px;
+  font-size: 10px;
+}
+
+.quick-entry__head h3 {
+  font-size: 16px;
+}
+
+.quick-entry__hint {
+  flex: 0 0 auto;
+  color: var(--hb-ink-faint);
+  font-size: 11px;
+}
+
+.quick-entry__actions {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.quick-action {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  padding: 12px 14px;
+  color: var(--hb-ink);
+  text-align: left;
+  appearance: none;
+  background: var(--hb-surface);
+  border: 1px solid var(--hb-line);
+  border-radius: 14px;
+  cursor: pointer;
+  transition:
+    transform 0.16s ease,
+    border-color 0.16s ease,
+    box-shadow 0.16s ease;
+}
+
+.quick-action:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 8px 18px rgba(59, 48, 33, 0.08);
+}
+
+.quick-action--expense {
+  background: linear-gradient(135deg, #fdf6f0, #fbf1e8);
+  border-color: #eedbca;
+}
+
+.quick-action--income {
+  background: linear-gradient(135deg, #f1f9f6, #e9f5f1);
+  border-color: #d3e7e1;
+}
+
+.quick-action--transfer {
+  background: linear-gradient(135deg, #fcf8ee, #f8f1e3);
+  border-color: #e8dcc3;
+}
+
+.quick-action__icon {
+  display: grid;
+  flex: 0 0 auto;
+  width: 34px;
+  height: 34px;
+  place-items: center;
+  border-radius: 10px;
+}
+
+.quick-action--expense .quick-action__icon {
+  color: #9a5530;
+  background: var(--hb-terracotta-soft);
+}
+
+.quick-action--income .quick-action__icon {
+  color: var(--hb-teal-dark);
+  background: var(--hb-teal-soft);
+}
+
+.quick-action--transfer .quick-action__icon {
+  color: #8a6a2f;
+  background: #f6ecd7;
+}
+
+.quick-action__text {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.quick-action__text strong {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.quick-action__text small {
+  overflow: hidden;
+  color: var(--hb-ink-faint);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.quick-action__arrow {
+  flex: 0 0 auto;
+  color: var(--hb-ink-faint);
 }
 
 .stats-grid {
@@ -622,6 +827,19 @@ const trendChartLabel = computed(() => {
 }
 
 @media (max-width: 760px) {
+  .quick-entry {
+    padding: 14px;
+  }
+
+  .quick-entry__hint {
+    display: none;
+  }
+
+  .quick-action {
+    gap: 8px;
+    padding: 11px 12px;
+  }
+
   .onboarding {
     align-items: flex-start;
     flex-wrap: wrap;
@@ -635,6 +853,46 @@ const trendChartLabel = computed(() => {
 }
 
 @media (max-width: 640px) {
+  .quick-entry {
+    padding: 13px 12px 12px;
+    margin-bottom: 12px;
+  }
+
+  .quick-entry__head {
+    margin-bottom: 10px;
+  }
+
+  .quick-entry__head h3 {
+    font-size: 14px;
+  }
+
+  .quick-entry__actions {
+    gap: 6px;
+  }
+
+  .quick-action {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 7px;
+    padding: 10px;
+    border-radius: 12px;
+  }
+
+  .quick-action__icon {
+    width: 30px;
+    height: 30px;
+    border-radius: 9px;
+  }
+
+  .quick-action__text small,
+  .quick-action__arrow {
+    display: none;
+  }
+
+  .quick-action__text strong {
+    font-size: 12px;
+  }
+
   .stats-grid {
     grid-template-columns: minmax(0, 1fr);
     gap: 10px;

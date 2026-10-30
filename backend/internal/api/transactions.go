@@ -12,21 +12,23 @@ import (
 )
 
 type transactionCreateRequest struct {
-	Account  *int64          `json:"account"`
-	Kind     *string         `json:"kind"`
-	Amount   json.RawMessage `json:"amount"`
-	Category *string         `json:"category"`
-	Date     *string         `json:"date"`
-	Note     *string         `json:"note"`
+	Account         *int64          `json:"account"`
+	Kind            *string         `json:"kind"`
+	Amount          json.RawMessage `json:"amount"`
+	Category        *string         `json:"category"`
+	Date            *string         `json:"date"`
+	Note            *string         `json:"note"`
+	TransferAccount *int64          `json:"transfer_account"`
 }
 
 type transactionPatchRequest struct {
-	Account  *int64          `json:"account"`
-	Kind     *string         `json:"kind"`
-	Amount   json.RawMessage `json:"amount"`
-	Category *string         `json:"category"`
-	Date     *string         `json:"date"`
-	Note     *string         `json:"note"`
+	Account         *int64          `json:"account"`
+	Kind            *string         `json:"kind"`
+	Amount          json.RawMessage `json:"amount"`
+	Category        *string         `json:"category"`
+	Date            *string         `json:"date"`
+	Note            *string         `json:"note"`
+	TransferAccount json.RawMessage `json:"transfer_account"`
 }
 
 func (a *API) handleListTransactions(c *gin.Context) {
@@ -57,7 +59,7 @@ func (a *API) handleListTransactions(c *gin.Context) {
 	if kindValue, present := c.GetQuery("kind"); present {
 		kind, valid := normalizeKind(kindValue)
 		if !valid {
-			abortFields(c, map[string][]string{"kind": {"类型只能是 income 或 expense。"}})
+			abortFields(c, map[string][]string{"kind": {"类型只能是 income、expense 或 transfer。"}})
 			return
 		}
 		filters.Kind = kind
@@ -111,9 +113,24 @@ func (a *API) handleCreateTransaction(c *gin.Context) {
 	if request.Kind == nil {
 		fields["kind"] = []string{"请选择收支类型。"}
 	} else if parsedKind, valid := normalizeKind(*request.Kind); !valid {
-		fields["kind"] = []string{"类型只能是 income 或 expense。"}
+		fields["kind"] = []string{"类型只能是 income、expense 或 transfer。"}
 	} else {
 		kind = parsedKind
+	}
+
+	transferAccountID := int64(0)
+	if kind == "transfer" {
+		if request.TransferAccount == nil {
+			fields["transfer_account"] = []string{"请选择转入账户。"}
+		} else if *request.TransferAccount <= 0 {
+			fields["transfer_account"] = []string{"转入账户参数无效。"}
+		} else if accountID > 0 && *request.TransferAccount == accountID {
+			fields["transfer_account"] = []string{"转入账户不能与转出账户相同。"}
+		} else {
+			transferAccountID = *request.TransferAccount
+		}
+	} else if request.TransferAccount != nil {
+		fields["transfer_account"] = []string{"只有转账交易才能设置转入账户。"}
 	}
 
 	amount := int64(0)
@@ -128,7 +145,9 @@ func (a *API) handleCreateTransaction(c *gin.Context) {
 	}
 
 	category := ""
-	if request.Category == nil {
+	if kind == "transfer" {
+		category = store.TransferCategory
+	} else if request.Category == nil {
 		fields["category"] = []string{"请选择分类。"}
 	} else if parsedCategory, message := cleanText(*request.Category, 64, "分类"); message != "" {
 		fields["category"] = []string{message}
@@ -138,9 +157,9 @@ func (a *API) handleCreateTransaction(c *gin.Context) {
 
 	date := ""
 	if request.Date == nil {
-		fields["date"] = []string{"请选择日期。"}
+		fields["date"] = []string{"请选择日期时间。"}
 	} else if parsedDate, valid := normalizeDate(*request.Date); !valid {
-		fields["date"] = []string{"日期格式应为 YYYY-MM-DD。"}
+		fields["date"] = []string{"日期时间格式应为 YYYY-MM-DDTHH:MM:SS。"}
 	} else {
 		date = parsedDate
 	}
@@ -158,18 +177,35 @@ func (a *API) handleCreateTransaction(c *gin.Context) {
 		return
 	}
 
+	var transferAccount *int64
+	if transferAccountID > 0 {
+		transferAccount = &transferAccountID
+	}
 	transaction, err := a.store.CreateTransaction(
 		c.Request.Context(), auth.User.HouseholdID, auth.User.ID,
 		store.TransactionInput{
-			AccountID:   accountID,
-			Kind:        kind,
-			AmountCents: amount,
-			Category:    category,
-			Date:        date,
-			Note:        note,
+			AccountID:         accountID,
+			TransferAccountID: transferAccount,
+			Kind:              kind,
+			AmountCents:       amount,
+			Category:          category,
+			Date:              date,
+			Note:              note,
 		})
 	if errors.Is(err, store.ErrInvalidAccount) {
 		abortFields(c, map[string][]string{"account": {"账户不存在或不属于当前家庭。"}})
+		return
+	}
+	if errors.Is(err, store.ErrInvalidTransfer) {
+		abortFields(c, map[string][]string{
+			"transfer_account": {"转入账户不存在或不属于当前家庭，且不能与转出账户相同。"},
+		})
+		return
+	}
+	if errors.Is(err, store.ErrTransferAccountNotAllowed) {
+		abortFields(c, map[string][]string{
+			"transfer_account": {"只有转账交易才能设置转入账户。"},
+		})
 		return
 	}
 	if err != nil {
@@ -209,9 +245,21 @@ func (a *API) handlePatchTransaction(c *gin.Context) {
 	}
 	if request.Kind != nil {
 		if kind, valid := normalizeKind(*request.Kind); !valid {
-			fields["kind"] = []string{"类型只能是 income 或 expense。"}
+			fields["kind"] = []string{"类型只能是 income、expense 或 transfer。"}
 		} else {
 			patch.Kind = &kind
+		}
+	}
+	if request.TransferAccount != nil {
+		patch.TransferAccountSet = true
+		if strings.TrimSpace(string(request.TransferAccount)) != "null" {
+			var transferAccountID int64
+			if err := json.Unmarshal(request.TransferAccount, &transferAccountID); err != nil ||
+				transferAccountID <= 0 {
+				fields["transfer_account"] = []string{"转入账户参数无效。"}
+			} else {
+				patch.TransferAccountID = &transferAccountID
+			}
 		}
 	}
 	if request.Amount != nil {
@@ -223,7 +271,7 @@ func (a *API) handlePatchTransaction(c *gin.Context) {
 			patch.AmountCents = &amount
 		}
 	}
-	if request.Category != nil {
+	if request.Category != nil && (patch.Kind == nil || *patch.Kind != "transfer") {
 		if category, message := cleanText(*request.Category, 64, "分类"); message != "" {
 			fields["category"] = []string{message}
 		} else {
@@ -232,7 +280,7 @@ func (a *API) handlePatchTransaction(c *gin.Context) {
 	}
 	if request.Date != nil {
 		if date, valid := normalizeDate(*request.Date); !valid {
-			fields["date"] = []string{"日期格式应为 YYYY-MM-DD。"}
+			fields["date"] = []string{"日期时间格式应为 YYYY-MM-DDTHH:MM:SS。"}
 		} else {
 			patch.Date = &date
 		}
@@ -243,6 +291,20 @@ func (a *API) handlePatchTransaction(c *gin.Context) {
 		} else {
 			patch.Note = request.Note
 		}
+	}
+	if patch.Kind != nil {
+		if *patch.Kind != "transfer" && patch.TransferAccountSet &&
+			patch.TransferAccountID != nil {
+			fields["transfer_account"] = []string{"只有转账交易才能设置转入账户。"}
+		}
+		if *patch.Kind == "transfer" && patch.TransferAccountSet &&
+			patch.TransferAccountID == nil {
+			fields["transfer_account"] = []string{"请选择转入账户。"}
+		}
+	}
+	if patch.AccountID != nil && patch.TransferAccountID != nil &&
+		*patch.AccountID == *patch.TransferAccountID {
+		fields["transfer_account"] = []string{"转入账户不能与转出账户相同。"}
 	}
 	if len(fields) > 0 {
 		abortFields(c, fields)
@@ -257,6 +319,18 @@ func (a *API) handlePatchTransaction(c *gin.Context) {
 	}
 	if errors.Is(err, store.ErrInvalidAccount) {
 		abortFields(c, map[string][]string{"account": {"账户不存在或不属于当前家庭。"}})
+		return
+	}
+	if errors.Is(err, store.ErrInvalidTransfer) {
+		abortFields(c, map[string][]string{
+			"transfer_account": {"转入账户不存在或不属于当前家庭，且不能与转出账户相同。"},
+		})
+		return
+	}
+	if errors.Is(err, store.ErrTransferAccountNotAllowed) {
+		abortFields(c, map[string][]string{
+			"transfer_account": {"只有转账交易才能设置转入账户。"},
+		})
 		return
 	}
 	if err != nil {

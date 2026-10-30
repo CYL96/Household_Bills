@@ -18,7 +18,7 @@ interface NavItem {
 
 const baseNavItems: NavItem[] = [
   { to: '/', label: '总览', icon: Odometer },
-  { to: '/transactions', label: '收支明细', icon: Tickets },
+  { to: '/transactions', label: '流水明细', icon: Tickets },
   { to: '/accounts', label: '资金账户', icon: Wallet },
   { to: '/members', label: '家庭成员', icon: UserFilled },
 ]

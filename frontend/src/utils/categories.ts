@@ -27,5 +27,6 @@ export const INCOME_CATEGORIES = [
 ]
 
 export function categorySuggestions(kind: TransactionKind): string[] {
+  if (kind === 'transfer') return []
   return kind === 'income' ? INCOME_CATEGORIES : EXPENSE_CATEGORIES
 }

@@ -329,6 +329,35 @@ svg {
   padding: 24px;
 }
 
+/*
+ * Mobile floating entry shared by the dashboard and transactions pages: the
+ * header "记一笔" button becomes a fixed bottom-right action. Kept below the
+ * Element Plus overlays used by dialogs and drawers (z-index >= 2000).
+ */
+@media (max-width: 760px) {
+  .mobile-entry-fab.el-button {
+    position: fixed;
+    right: calc(16px + env(safe-area-inset-right, 0px));
+    bottom: calc(16px + env(safe-area-inset-bottom, 0px));
+    z-index: 40;
+    height: 48px;
+    min-width: 48px;
+    padding: 0 20px;
+    border-radius: 999px;
+    box-shadow: 0 12px 28px rgba(10, 93, 87, 0.32);
+  }
+
+  /* The floating button leaves its header container empty on mobile. */
+  .heading-actions--fab {
+    display: contents;
+  }
+
+  /* Keeps the last page content scrollable clear of the floating entry. */
+  .has-mobile-fab {
+    padding-bottom: calc(88px + env(safe-area-inset-bottom, 0px));
+  }
+}
+
 @media (max-width: 640px) {
   .page-heading {
     align-items: flex-start;

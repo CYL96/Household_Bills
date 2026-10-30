@@ -21,7 +21,7 @@ import { useMediaQuery } from '../composables/useMediaQuery'
 import { dataVersion, markDataChanged } from '../stores/data'
 import {
   currentMonth,
-  formatDateLabel,
+  formatDateTimeLabel,
   formatMonthLabel,
   formatSignedAmount,
 } from '../utils/format'
@@ -42,6 +42,47 @@ const accountFilter = ref<number | ''>('')
 const kindFilter = ref<TransactionKind | ''>('')
 const searchQuery = ref('')
 
+const TRANSACTION_KINDS: readonly TransactionKind[] = [
+  'expense',
+  'income',
+  'transfer',
+]
+
+const KIND_LABELS: Record<TransactionKind, string> = {
+  expense: '支出',
+  income: '收入',
+  transfer: '转账',
+}
+
+function isTransactionKind(value: unknown): value is TransactionKind {
+  return (
+    typeof value === 'string' &&
+    (TRANSACTION_KINDS as readonly string[]).includes(value)
+  )
+}
+
+function kindLabel(kind: TransactionKind): string {
+  return KIND_LABELS[kind]
+}
+
+/**
+ * Transfers read as source → destination; other kinds show one account.
+ * Element Plus table slots hand over its untyped DefaultRow, so validate at
+ * this boundary instead of casting the row to Transaction.
+ */
+function displayAccount(row: unknown): string {
+  if (!isTransactionRow(row)) return ''
+  if (row.kind === 'transfer' && row.transfer_account_name) {
+    return `${row.account_name} → ${row.transfer_account_name}`
+  }
+  return row.account_name
+}
+
+function recordNoun(row: unknown): string {
+  if (!isTransactionRow(row)) return '记录'
+  return row.kind === 'transfer' ? '转账' : '收支'
+}
+
 const transactions = ref<Transaction[]>([])
 const accounts = ref<Account[]>([])
 const loading = ref(true)
@@ -51,6 +92,7 @@ const listError = ref('')
 
 const dialogVisible = ref(false)
 const editingTransaction = ref<Transaction | null>(null)
+const initialKind = ref<TransactionKind>('expense')
 const deletingId = ref<number | null>(null)
 
 const isMobile = useMediaQuery('(max-width: 760px)')
@@ -61,8 +103,8 @@ let accountsRequest = 0
 
 const resultsTitle = computed(() =>
   monthFilter.value
-    ? `${formatMonthLabel(monthFilter.value)}收支`
-    : '全部月份收支',
+    ? `${formatMonthLabel(monthFilter.value)}流水`
+    : '全部月份流水',
 )
 
 const hasNoAccounts = computed(
@@ -108,8 +150,9 @@ async function loadTransactions(): Promise<void> {
   }
 }
 
-function openCreate(): void {
+function openCreate(kind: TransactionKind = 'expense'): void {
   editingTransaction.value = null
+  initialKind.value = kind
   dialogVisible.value = true
 }
 
@@ -123,11 +166,16 @@ function isTransactionRow(row: unknown): row is Transaction {
   return (
     typeof candidate.id === 'number' &&
     typeof candidate.account === 'number' &&
-    (candidate.kind === 'income' || candidate.kind === 'expense') &&
+    (candidate.kind === 'income' ||
+      candidate.kind === 'expense' ||
+      candidate.kind === 'transfer') &&
     typeof candidate.amount === 'string' &&
     typeof candidate.category === 'string' &&
     typeof candidate.date === 'string' &&
-    typeof candidate.note === 'string'
+    typeof candidate.note === 'string' &&
+    (candidate.transfer_account === null ||
+      typeof candidate.transfer_account === 'number') &&
+    typeof candidate.transfer_account_name === 'string'
   )
 }
 
@@ -136,6 +184,7 @@ function openEditRow(row: unknown): void {
 }
 
 function openEdit(transaction: Transaction): void {
+  initialKind.value = transaction.kind
   editingTransaction.value = transaction
   dialogVisible.value = true
 }
@@ -157,12 +206,21 @@ function resetFilters(): void {
 }
 
 async function confirmDelete(transaction: Transaction): Promise<void> {
+  const isTransfer = transaction.kind === 'transfer'
+  const amount = formatSignedAmount(transaction.amount, transaction.kind)
+  const detail = isTransfer
+    ? `从「${transaction.account_name}」转到「${transaction.transfer_account_name}」，${amount}`
+    : amount
+  const description = isTransfer
+    ? `将删除记账时间为 ${formatDateTimeLabel(transaction.date)} 的账户转账记录（${detail}）。删除后两个账户的余额都会重新计算，且无法恢复。`
+    : `将删除记账时间为 ${formatDateTimeLabel(transaction.date)} 的「${
+        transaction.category
+      }」记录（${detail}）。删除后账户余额会重新计算，且无法恢复。`
+
   try {
     await ElMessageBox.confirm(
-      `将删除 ${formatDateLabel(transaction.date)} 的「${
-        transaction.category
-      }」记录（${formatSignedAmount(transaction.amount, transaction.kind)}）。删除后账户余额会重新计算，且无法恢复。`,
-      '删除这笔收支？',
+      description,
+      isTransfer ? '删除这笔转账？' : '删除这笔收支？',
       {
         confirmButtonText: '删除',
         cancelButtonText: '取消',
@@ -178,7 +236,7 @@ async function confirmDelete(transaction: Transaction): Promise<void> {
   deletingId.value = transaction.id
   try {
     await deleteTransaction(transaction.id)
-    ElMessage.success('已删除这笔收支')
+    ElMessage.success(isTransfer ? '已删除这笔转账' : '已删除这笔收支')
     markDataChanged()
   } catch (error) {
     ElMessage.error(getErrorMessage(error))
@@ -191,16 +249,18 @@ async function consumeNewQuery(): Promise<void> {
   if (route.query.new !== '1') return
   const query: Record<string, string | null | (string | null)[]> = {}
   for (const [key, value] of Object.entries(route.query)) {
-    if (key === 'new' || value === undefined) continue
+    if (key === 'new' || key === 'kind' || value === undefined) continue
     query[key] = value
   }
   await router.replace({ query })
 }
 
 onMounted(async () => {
+  const queryKind = route.query.kind
+  const requestedKind = isTransactionKind(queryKind) ? queryKind : 'expense'
   await Promise.all([loadAccounts(), loadTransactions()])
   if (route.query.new === '1') {
-    openCreate()
+    openCreate(requestedKind)
     await consumeNewQuery()
   }
 })
@@ -234,7 +294,7 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="transactions-page">
+  <div class="transactions-page has-mobile-fab">
     <div class="page-heading">
       <div class="page-heading__copy">
         <p class="page-eyebrow">流水与筛选</p>
@@ -243,8 +303,13 @@ onBeforeUnmount(() => {
           按月份、账户、类型或关键词查找；记录可随时编辑与删除。
         </p>
       </div>
-      <div class="heading-actions">
-        <el-button type="primary" :icon="Plus" @click="openCreate">
+      <div class="heading-actions heading-actions--fab">
+        <el-button
+          type="primary"
+          :icon="Plus"
+          class="mobile-entry-fab"
+          @click="openCreate('expense')"
+        >
           记一笔
         </el-button>
       </div>
@@ -262,7 +327,7 @@ onBeforeUnmount(() => {
       </el-button>
     </div>
 
-    <section class="surface-card filter-panel" aria-label="收支筛选">
+    <section class="surface-card filter-panel" aria-label="流水筛选">
       <div class="filter-grid">
         <div class="filter-field">
           <span class="filter-label">月份</span>
@@ -301,10 +366,11 @@ onBeforeUnmount(() => {
             v-model="kindFilter"
             placeholder="全部类型"
             clearable
-            aria-label="按收支类型筛选"
+            aria-label="按类型筛选"
           >
             <el-option label="收入" value="income" />
             <el-option label="支出" value="expense" />
+            <el-option label="转账" value="transfer" />
           </el-select>
         </div>
 
@@ -330,7 +396,7 @@ onBeforeUnmount(() => {
 
     <div v-if="listError" class="surface-card list-error">
       <EmptyState
-        title="暂时无法加载收支明细"
+        title="暂时无法加载流水明细"
         :description="listError"
         :icon="WarningFilled"
       >
@@ -371,8 +437,9 @@ onBeforeUnmount(() => {
                 <div class="tx-card__heading">
                   <h4>{{ transaction.category }}</h4>
                   <p>
-                    {{ formatDateLabel(transaction.date) }} ·
-                    {{ transaction.account_name }}
+                    <span class="tx-card__time">{{ formatDateTimeLabel(transaction.date) }}</span>
+                    <span aria-hidden="true"> · </span>
+                    {{ displayAccount(transaction) }}
                   </p>
                 </div>
               </div>
@@ -391,7 +458,7 @@ onBeforeUnmount(() => {
             <div class="tx-card__foot">
               <div class="tx-card__meta">
                 <span class="kind-pill" :class="`kind-pill--${transaction.kind}`">
-                  {{ transaction.kind === 'income' ? '收入' : '支出' }}
+                  {{ kindLabel(transaction.kind) }}
                 </span>
                 <span>{{ transaction.created_by_name }} 记录</span>
               </div>
@@ -400,7 +467,7 @@ onBeforeUnmount(() => {
                   text
                   size="small"
                   :icon="EditPen"
-                  :aria-label="`编辑${transaction.category}这笔收支`"
+                  :aria-label="`编辑${transaction.category}这笔${recordNoun(transaction)}`"
                   @click="openEdit(transaction)"
                 >
                   编辑
@@ -411,7 +478,7 @@ onBeforeUnmount(() => {
                   type="danger"
                   :icon="Delete"
                   :loading="deletingId === transaction.id"
-                  :aria-label="`删除${transaction.category}这笔收支`"
+                  :aria-label="`删除${transaction.category}这笔${recordNoun(transaction)}`"
                   @click="confirmDelete(transaction)"
                 >
                   删除
@@ -422,14 +489,18 @@ onBeforeUnmount(() => {
 
           <EmptyState
             v-if="!loading && transactions.length === 0"
-            title="暂无符合条件的收支"
-            description="调整筛选条件，或记下这个月的第一笔家庭收支。"
+            title="暂无符合条件的记录"
+            description="调整筛选条件，或记下这个月的第一笔家庭流水。"
           >
             <template #actions>
               <el-button :icon="RefreshLeft" @click="resetFilters">
                 重置筛选
               </el-button>
-              <el-button type="primary" :icon="Plus" @click="openCreate">
+              <el-button
+                type="primary"
+                :icon="Plus"
+                @click="openCreate('expense')"
+              >
                 记一笔
               </el-button>
             </template>
@@ -444,9 +515,9 @@ onBeforeUnmount(() => {
         row-key="id"
         class="ledger-table"
       >
-        <el-table-column label="日期" width="116">
+        <el-table-column label="记账时间" width="160">
           <template #default="{ row }">
-            <span class="date-cell">{{ row.date }}</span>
+            <span class="date-cell">{{ formatDateTimeLabel(row.date) }}</span>
           </template>
         </el-table-column>
 
@@ -459,7 +530,7 @@ onBeforeUnmount(() => {
         <el-table-column label="类型" width="88">
           <template #default="{ row }">
             <span class="kind-pill" :class="`kind-pill--${row.kind}`">
-              {{ row.kind === 'income' ? '收入' : '支出' }}
+              {{ kindLabel(row.kind) }}
             </span>
           </template>
         </el-table-column>
@@ -477,7 +548,9 @@ onBeforeUnmount(() => {
 
         <el-table-column label="账户" min-width="112">
           <template #default="{ row }">
-            <span class="account-cell">{{ row.account_name }}</span>
+            <span class="account-cell" :title="displayAccount(row)">
+              {{ displayAccount(row) }}
+            </span>
           </template>
         </el-table-column>
 
@@ -507,7 +580,7 @@ onBeforeUnmount(() => {
                 circle
                 :icon="EditPen"
                 title="编辑"
-                :aria-label="`编辑${row.category}这笔收支`"
+                :aria-label="`编辑${row.category}这笔${recordNoun(row)}`"
                 @click="openEditRow(row)"
               />
               <el-button
@@ -517,7 +590,7 @@ onBeforeUnmount(() => {
                 :icon="Delete"
                 title="删除"
                 :loading="deletingId === row.id"
-                :aria-label="`删除${row.category}这笔收支`"
+                :aria-label="`删除${row.category}这笔${recordNoun(row)}`"
                 @click="confirmDeleteRow(row)"
               />
             </div>
@@ -526,14 +599,18 @@ onBeforeUnmount(() => {
 
         <template #empty>
           <EmptyState
-            title="暂无符合条件的收支"
-            description="调整筛选条件，或记下这个月的第一笔家庭收支。"
+            title="暂无符合条件的记录"
+            description="调整筛选条件，或记下这个月的第一笔家庭流水。"
           >
             <template #actions>
               <el-button :icon="RefreshLeft" @click="resetFilters">
                 重置筛选
               </el-button>
-              <el-button type="primary" :icon="Plus" @click="openCreate">
+              <el-button
+                type="primary"
+                :icon="Plus"
+                @click="openCreate('expense')"
+              >
                 记一笔
               </el-button>
             </template>
@@ -546,6 +623,7 @@ onBeforeUnmount(() => {
       v-model="dialogVisible"
       :transaction="editingTransaction"
       :accounts="accounts"
+      :initial-kind="initialKind"
     />
   </div>
 </template>
@@ -702,6 +780,7 @@ onBeforeUnmount(() => {
   color: var(--hb-ink-soft);
   font-size: 12px;
   font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 
 .category-cell {
@@ -709,8 +788,12 @@ onBeforeUnmount(() => {
 }
 
 .account-cell {
+  display: block;
+  overflow: hidden;
   color: var(--hb-ink-soft);
   font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .note-cell {
@@ -737,6 +820,10 @@ onBeforeUnmount(() => {
   color: #9a5530;
 }
 
+.amount--transfer {
+  color: #8a6a2f;
+}
+
 .kind-pill {
   display: inline-flex;
   align-items: center;
@@ -756,6 +843,11 @@ onBeforeUnmount(() => {
 .kind-pill--expense {
   color: #96502b;
   background: var(--hb-terracotta-soft);
+}
+
+.kind-pill--transfer {
+  color: #7d5f25;
+  background: #f6ecd7;
 }
 
 .row-actions {
@@ -814,6 +906,10 @@ onBeforeUnmount(() => {
   background: var(--hb-terracotta);
 }
 
+.tx-card__dot--transfer {
+  background: var(--hb-gold);
+}
+
 .tx-card__heading {
   min-width: 0;
 }
@@ -828,6 +924,13 @@ onBeforeUnmount(() => {
   margin-top: 2px;
   color: var(--hb-ink-faint);
   font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+
+.tx-card__time {
+  white-space: nowrap;
 }
 
 .tx-card__amount {

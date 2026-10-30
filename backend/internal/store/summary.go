@@ -32,8 +32,8 @@ func (s *Store) GetSummary(ctx context.Context, householdID int64, month, monthS
 		       COALESCE(SUM(amount_cents) FILTER (WHERE kind = 'expense'), 0)::text
 		FROM transactions
 		WHERE household_id = $1
-		  AND tx_date >= $2::date
-		  AND tx_date < $3::date`,
+		  AND tx_date >= $2::timestamp
+		  AND tx_date < $3::timestamp`,
 		householdID, monthStart, monthEnd).Scan(&incomeText, &expenseText)
 	if err != nil {
 		return Summary{}, fmt.Errorf("读取月度收支失败: %w", err)
@@ -52,7 +52,11 @@ func (s *Store) GetSummary(ctx context.Context, householdID int64, month, monthS
 	err = tx.QueryRow(ctx, `
 		SELECT (
 			COALESCE((SELECT SUM(opening_balance_cents) FROM accounts WHERE household_id = $1), 0)::numeric
-			+ COALESCE((SELECT SUM(CASE WHEN kind = 'income' THEN amount_cents ELSE -amount_cents END)
+			+ COALESCE((SELECT SUM(CASE
+			                        WHEN kind = 'income' THEN amount_cents
+			                        WHEN kind = 'expense' THEN -amount_cents
+			                        ELSE 0
+			                      END)
 			            FROM transactions WHERE household_id = $1), 0)::numeric
 		)::text`, householdID).Scan(&totalText)
 	if err != nil {
@@ -68,8 +72,8 @@ func (s *Store) GetSummary(ctx context.Context, householdID int64, month, monthS
 		FROM transactions
 		WHERE household_id = $1
 		  AND kind = 'expense'
-		  AND tx_date >= $2::date
-		  AND tx_date < $3::date
+		  AND tx_date >= $2::timestamp
+		  AND tx_date < $3::timestamp
 		GROUP BY category
 		ORDER BY SUM(amount_cents) DESC, category ASC`,
 		householdID, monthStart, monthEnd)
@@ -96,15 +100,16 @@ func (s *Store) GetSummary(ctx context.Context, householdID int64, month, monthS
 	}
 
 	dailyRows, err := tx.Query(ctx, `
-		SELECT tx_date,
+		SELECT tx_date::date,
 		       COALESCE(SUM(amount_cents) FILTER (WHERE kind = 'income'), 0)::text,
 		       COALESCE(SUM(amount_cents) FILTER (WHERE kind = 'expense'), 0)::text
 		FROM transactions
 		WHERE household_id = $1
-		  AND tx_date >= $2::date
-		  AND tx_date < $3::date
-		GROUP BY tx_date
-		ORDER BY tx_date ASC`,
+		  AND kind IN ('income', 'expense')
+		  AND tx_date >= $2::timestamp
+		  AND tx_date < $3::timestamp
+		GROUP BY tx_date::date
+		ORDER BY tx_date::date ASC`,
 		householdID, monthStart, monthEnd)
 	if err != nil {
 		return Summary{}, fmt.Errorf("读取每日收支失败: %w", err)

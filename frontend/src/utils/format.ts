@@ -1,3 +1,5 @@
+import type { TransactionKind } from '../api/types'
+
 const moneyFormatter = new Intl.NumberFormat('zh-CN', {
   minimumFractionDigits: 2,
   maximumFractionDigits: 2,
@@ -17,10 +19,13 @@ export function currentMonth(): string {
   return `${now.getFullYear()}-${pad2(now.getMonth() + 1)}`
 }
 
-/** Local calendar date in YYYY-MM-DD, never derived through UTC. */
-export function todayISO(): string {
+/**
+ * Local civil date-time in YYYY-MM-DDTHH:mm:ss, never derived through UTC.
+ * Matches the transaction `date` API field exactly (no timezone offset).
+ */
+export function nowLocalDateTime(): string {
   const now = new Date()
-  return `${now.getFullYear()}-${pad2(now.getMonth() + 1)}-${pad2(now.getDate())}`
+  return `${now.getFullYear()}-${pad2(now.getMonth() + 1)}-${pad2(now.getDate())}T${pad2(now.getHours())}:${pad2(now.getMinutes())}:${pad2(now.getSeconds())}`
 }
 
 export function toNumber(value: string | number | null | undefined): number {
@@ -37,8 +42,9 @@ export function formatMoney(value: string | number | null | undefined): string {
 
 export function formatSignedAmount(
   amount: string | number,
-  kind: 'income' | 'expense',
+  kind: TransactionKind,
 ): string {
+  if (kind === 'transfer') return formatMoney(amount)
   return `${kind === 'income' ? '+' : '−'}${formatMoney(amount)}`
 }
 
@@ -59,10 +65,15 @@ export function formatMonthLabel(month: string): string {
   return `${match[1]}年${Number(match[2])}月`
 }
 
-export function formatDateLabel(date: string): string {
-  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(date)
-  if (!match) return date
-  return `${match[1]}年${Number(match[2])}月${Number(match[3])}日`
+/**
+ * Renders a transaction `date` (YYYY-MM-DDTHH:mm:ss, local civil time) as
+ * YYYY-MM-DD HH:mm:ss so the seconds stay visible. Returns the input unchanged
+ * when it does not have the expected shape.
+ */
+export function formatDateTimeLabel(value: string): string {
+  const match = /^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2}:\d{2})$/.exec(value)
+  if (!match) return value
+  return `${match[1]} ${match[2]}`
 }
 
 export function formatDayLabel(date: string): string {

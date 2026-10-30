@@ -1,4 +1,4 @@
-export type TransactionKind = 'income' | 'expense'
+export type TransactionKind = 'income' | 'expense' | 'transfer'
 
 export interface User {
   id: number
@@ -46,10 +46,17 @@ export interface Transaction {
   kind: TransactionKind
   amount: string
   category: string
+  /**
+   * Local civil date-time in YYYY-MM-DDTHH:mm:ss (no timezone offset).
+   * Includes seconds precise to the recorded transaction time.
+   */
   date: string
   note: string
   created_by: number
   created_by_name: string
+  /** Destination account for transfers; always null for income/expense. */
+  transfer_account: number | null
+  transfer_account_name: string
 }
 
 export interface TransactionPayload {
@@ -57,8 +64,11 @@ export interface TransactionPayload {
   kind: TransactionKind
   amount: string
   category: string
+  /** Local civil date-time in YYYY-MM-DDTHH:mm:ss (no timezone offset). */
   date: string
   note?: string
+  /** Destination account for transfers; send null to clear it. */
+  transfer_account?: number | null
 }
 
 export interface TransactionFilters {
@@ -74,6 +84,7 @@ export interface SummaryCategory {
 }
 
 export interface SummaryDay {
+  /** Calendar date in YYYY-MM-DD; all transactions of that local day are merged. */
   date: string
   income: string
   expense: string

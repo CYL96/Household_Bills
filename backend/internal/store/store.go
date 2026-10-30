@@ -9,11 +9,17 @@ import (
 )
 
 var (
-	ErrNotFound        = errors.New("记录不存在")
-	ErrInvalidAccount  = errors.New("账户不存在")
-	ErrUsernameTaken   = errors.New("用户名已被使用")
-	ErrPasswordChanged = errors.New("登录凭据已变更")
+	ErrNotFound                  = errors.New("记录不存在")
+	ErrInvalidAccount            = errors.New("账户不存在")
+	ErrInvalidTransfer           = errors.New("转入账户无效")
+	ErrTransferAccountNotAllowed = errors.New("非转账交易不能设置转入账户")
+	ErrUsernameTaken             = errors.New("用户名已被使用")
+	ErrPasswordChanged           = errors.New("登录凭据已变更")
 )
+
+// TransferCategory is the fixed category for transfer transactions. Transfers
+// never appear in income or expense statistics, which are filtered by kind.
+const TransferCategory = "账户转账"
 
 // Store owns the PostgreSQL connection pool and all SQL access. The household
 // identifier is always supplied from the authenticated session and is part of
@@ -93,16 +99,18 @@ type Account struct {
 }
 
 type Transaction struct {
-	ID              int64
-	AccountID       int64
-	AccountName     string
-	Kind            string
-	AmountCents     int64
-	Category        string
-	Date            string
-	Note            string
-	CreatedBy       int64
-	CreatedByName   string
+	ID                  int64
+	AccountID           int64
+	AccountName         string
+	TransferAccountID   *int64
+	TransferAccountName string
+	Kind                string
+	AmountCents         int64
+	Category            string
+	Date                string
+	Note                string
+	CreatedBy           int64
+	CreatedByName       string
 }
 
 type AccountUpdate struct {
@@ -111,21 +119,27 @@ type AccountUpdate struct {
 }
 
 type TransactionInput struct {
-	AccountID  int64
-	Kind       string
-	AmountCents int64
-	Category   string
-	Date       string
-	Note       string
+	AccountID         int64
+	TransferAccountID *int64
+	Kind              string
+	AmountCents       int64
+	Category          string
+	Date              string
+	Note              string
 }
 
+// TransactionPatch leaves fields nil when they were omitted. TransferAccountSet
+// distinguishes an omitted transfer_account from an explicit null, since an
+// explicit null must clear the destination while an omitted field preserves it.
 type TransactionPatch struct {
-	AccountID   *int64
-	Kind        *string
-	AmountCents *int64
-	Category    *string
-	Date        *string
-	Note        *string
+	AccountID          *int64
+	TransferAccountID  *int64
+	TransferAccountSet bool
+	Kind               *string
+	AmountCents        *int64
+	Category           *string
+	Date               *string
+	Note               *string
 }
 
 type TransactionFilters struct {

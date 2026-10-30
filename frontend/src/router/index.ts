@@ -25,7 +25,7 @@ const router = createRouter({
           path: 'transactions',
           name: 'transactions',
           component: () => import('../views/TransactionsView.vue'),
-          meta: { title: '收支明细', requiresAuth: true },
+          meta: { title: '流水明细', requiresAuth: true },
         },
         {
           path: 'accounts',

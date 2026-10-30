@@ -1138,11 +1138,11 @@ func TestHouseholdIsolationAndSharedMembers(t *testing.T) {
 
 	adminTransaction := admin.object(t, http.MethodPost, "/api/transactions/", map[string]any{
 		"account": adminAccountID, "kind": "income", "amount": "100.00",
-		"category": "工资", "date": "2026-10-01", "note": "甲的收入",
+		"category": "工资", "date": "2026-10-01T00:00:00", "note": "甲的收入",
 	}, http.StatusCreated)
 	bobTransaction := bob.object(t, http.MethodPost, "/api/transactions/", map[string]any{
 		"account": bobAccountID, "kind": "expense", "amount": "7.50",
-		"category": "日常", "date": "2026-10-02", "note": "乙的支出",
+		"category": "日常", "date": "2026-10-02T00:00:00", "note": "乙的支出",
 	}, http.StatusCreated)
 	adminTransactionID := jsonInt64(t, adminTransaction["id"])
 	bobTransactionID := jsonInt64(t, bobTransaction["id"])
@@ -1176,7 +1176,7 @@ func TestHouseholdIsolationAndSharedMembers(t *testing.T) {
 	// Foreign account validation on create and update.
 	foreignCreate := admin.do(http.MethodPost, "/api/transactions/", map[string]any{
 		"account": bobAccountID, "kind": "expense", "amount": "1.00",
-		"category": "餐饮", "date": "2026-10-03",
+		"category": "餐饮", "date": "2026-10-03T00:00:00",
 	})
 	foreignCreate.expect(t, http.StatusBadRequest)
 	if _, exists := foreignCreate.object(t)["account"]; !exists {
@@ -1271,6 +1271,7 @@ func TestBalanceAndSummaryLifecycle(t *testing.T) {
 	}
 	creditAccount := client.object(t, http.MethodPost, "/api/accounts/",
 		map[string]any{"name": "信用卡", "opening_balance": "-50.00"}, http.StatusCreated)
+	creditAccountID := jsonInt64(t, creditAccount["id"])
 	if mustString(t, creditAccount["opening_balance"]) != "-50.00" ||
 		mustString(t, creditAccount["balance"]) != "-50.00" {
 		t.Fatalf("负期初余额应被接受: %s", mustJSON(t, creditAccount))
@@ -1284,13 +1285,17 @@ func TestBalanceAndSummaryLifecycle(t *testing.T) {
 		expect(t, http.StatusBadRequest)
 
 	invalidTransactions := []map[string]any{
-		{"account": mainAccountID, "kind": "expense", "amount": "0.00", "category": "餐饮", "date": "2026-10-01"},
-		{"account": mainAccountID, "kind": "expense", "amount": "-1.00", "category": "餐饮", "date": "2026-10-01"},
-		{"account": mainAccountID, "kind": "expense", "amount": "1.234", "category": "餐饮", "date": "2026-10-01"},
-		{"account": mainAccountID, "kind": "expense", "amount": "10000000000.00", "category": "餐饮", "date": "2026-10-01"},
-		{"account": mainAccountID, "kind": "expense", "amount": "abc", "category": "餐饮", "date": "2026-10-01"},
-		{"account": mainAccountID, "kind": "transfer", "amount": "1.00", "category": "餐饮", "date": "2026-10-01"},
-		{"account": mainAccountID, "kind": "expense", "amount": "1.00", "category": "", "date": "2026-10-01"},
+		{"account": mainAccountID, "kind": "expense", "amount": "0.00", "category": "餐饮", "date": "2026-10-01T00:00:00"},
+		{"account": mainAccountID, "kind": "expense", "amount": "-1.00", "category": "餐饮", "date": "2026-10-01T00:00:00"},
+		{"account": mainAccountID, "kind": "expense", "amount": "1.234", "category": "餐饮", "date": "2026-10-01T00:00:00"},
+		{"account": mainAccountID, "kind": "expense", "amount": "10000000000.00", "category": "餐饮", "date": "2026-10-01T00:00:00"},
+		{"account": mainAccountID, "kind": "expense", "amount": "abc", "category": "餐饮", "date": "2026-10-01T00:00:00"},
+		{"account": mainAccountID, "kind": "transfer", "amount": "1.00", "date": "2026-10-01T00:00:00"},
+		{"account": mainAccountID, "kind": "transfer", "amount": "1.00", "transfer_account": mainAccountID, "date": "2026-10-01T00:00:00"},
+		{"account": mainAccountID, "kind": "transfer", "amount": "1.00", "transfer_account": 0, "date": "2026-10-01T00:00:00"},
+		{"account": mainAccountID, "kind": "transfer", "amount": "1.00", "transfer_account": 999999, "date": "2026-10-01T00:00:00"},
+		{"account": mainAccountID, "kind": "expense", "amount": "1.00", "category": "餐饮", "date": "2026-10-01T00:00:00", "transfer_account": creditAccountID},
+		{"account": mainAccountID, "kind": "expense", "amount": "1.00", "category": "", "date": "2026-10-01T00:00:00"},
 		{"account": mainAccountID, "kind": "expense", "amount": "1.00", "category": "餐饮", "date": "2026-2-01"},
 		{"account": mainAccountID, "kind": "expense", "amount": "1.00", "category": "餐饮", "date": "2026-02-30"},
 	}
@@ -1302,27 +1307,27 @@ func TestBalanceAndSummaryLifecycle(t *testing.T) {
 		}
 	}
 	client.do(http.MethodPost, "/api/transactions/", map[string]any{
-		"kind": "expense", "amount": "1.00", "category": "餐饮", "date": "2026-10-01",
+		"kind": "expense", "amount": "1.00", "category": "餐饮", "date": "2026-10-01T00:00:00",
 	}).expect(t, http.StatusBadRequest)
 	client.do(http.MethodGet, "/api/transactions/?month=2026-13", nil).
 		expect(t, http.StatusBadRequest)
 
 	income := client.object(t, http.MethodPost, "/api/transactions/", map[string]any{
 		"account": mainAccountID, "kind": "income", "amount": "50.00",
-		"category": "工资", "date": "2026-10-03", "note": "十月工资",
+		"category": "工资", "date": "2026-10-03T00:00:00", "note": "十月工资",
 	}, http.StatusCreated)
 	expense := client.object(t, http.MethodPost, "/api/transactions/", map[string]any{
 		"account": mainAccountID, "kind": "expense", "amount": "20.00",
-		"category": "餐饮", "date": "2026-10-05", "note": "聚餐",
+		"category": "餐饮", "date": "2026-10-05T00:00:00", "note": "聚餐",
 	}, http.StatusCreated)
 	client.object(t, http.MethodPost, "/api/transactions/", map[string]any{
 		"account": mainAccountID, "kind": "expense", "amount": "10.00",
-		"category": "餐饮", "date": "2026-09-30",
+		"category": "餐饮", "date": "2026-09-30T00:00:00",
 	}, http.StatusCreated)
 	incomeID := jsonInt64(t, income["id"])
 	expenseID := jsonInt64(t, expense["id"])
 	if mustString(t, income["amount"]) != "50.00" ||
-		mustString(t, income["date"]) != "2026-10-03" ||
+		mustString(t, income["date"]) != "2026-10-03T00:00:00" ||
 		mustString(t, income["account_name"]) != "日常账户" ||
 		mustString(t, income["created_by_name"]) != "alice" {
 		t.Fatalf("交易响应字段错误: %s", mustJSON(t, income))
@@ -1332,8 +1337,8 @@ func TestBalanceAndSummaryLifecycle(t *testing.T) {
 	if len(october) != 2 {
 		t.Fatalf("十月应有 2 条交易，实际 %d", len(october))
 	}
-	if mustString(t, october[0]["date"]) != "2026-10-05" ||
-		mustString(t, october[1]["date"]) != "2026-10-03" {
+	if mustString(t, october[0]["date"]) != "2026-10-05T00:00:00" ||
+		mustString(t, october[1]["date"]) != "2026-10-03T00:00:00" {
 		t.Fatalf("交易应按日期倒序: %s", mustJSON(t, october))
 	}
 	if got := len(client.array(t, http.MethodGet,
@@ -1459,4 +1464,393 @@ func TestBalanceAndSummaryLifecycle(t *testing.T) {
 	client.do(http.MethodGet, "/api/summary/", nil).expect(t, http.StatusBadRequest)
 	client.do(http.MethodGet, "/api/summary/?month=2026-13", nil).
 		expect(t, http.StatusBadRequest)
+}
+
+func TestTransactionSecondPrecision(t *testing.T) {
+	env := newTestEnv(t)
+	admin := env.adminClient(t)
+	admin.createUser(t, "alice", strongPassword)
+	client := env.loginUser(t, "alice", strongPassword)
+
+	account := client.object(t, http.MethodPost, "/api/accounts/",
+		map[string]any{"name": "秒级账户", "opening_balance": "0.00"}, http.StatusCreated)
+	accountID := jsonInt64(t, account["id"])
+
+	invalidDates := []string{
+		"2026-10-01",
+		"2026-10-01T12:00",
+		"2026-10-01T24:00:00",
+		"2026-10-01T12:60:00",
+		"2026-10-01T12:00:60",
+		"2026-10-01T12:00:00.5",
+		"2026-10-01T12:00:00Z",
+		"2026-10-01T12:00:00+08:00",
+		"2026-02-30T12:00:00",
+	}
+	for _, date := range invalidDates {
+		response := client.do(http.MethodPost, "/api/transactions/", map[string]any{
+			"account": accountID, "kind": "expense", "amount": "1.00",
+			"category": "餐饮", "date": date,
+		})
+		if response.status != http.StatusBadRequest {
+			t.Fatalf("非法日期时间 %q 状态码 = %d，期望 400；响应: %s",
+				date, response.status, string(response.body))
+		}
+		if _, exists := response.object(t)["date"]; !exists {
+			t.Fatalf("非法日期时间 %q 应返回 date 字段错误: %s",
+				date, string(response.body))
+		}
+	}
+	if got := len(client.array(t, http.MethodGet, "/api/transactions/", nil, http.StatusOK)); got != 0 {
+		t.Fatalf("非法日期时间不应写入交易，实际 %d 条", got)
+	}
+
+	late := client.object(t, http.MethodPost, "/api/transactions/", map[string]any{
+		"account": accountID, "kind": "expense", "amount": "10.00",
+		"category": "餐饮", "date": "2026-10-31T23:59:59", "note": "月末最后一秒",
+	}, http.StatusCreated)
+	nextMonth := client.object(t, http.MethodPost, "/api/transactions/", map[string]any{
+		"account": accountID, "kind": "expense", "amount": "20.00",
+		"category": "餐饮", "date": "2026-11-01T00:00:00", "note": "次月第一秒",
+	}, http.StatusCreated)
+	earlier := client.object(t, http.MethodPost, "/api/transactions/", map[string]any{
+		"account": accountID, "kind": "income", "amount": "7.00",
+		"category": "工资", "date": "2026-10-02T09:30:15",
+	}, http.StatusCreated)
+	firstSameSecond := client.object(t, http.MethodPost, "/api/transactions/", map[string]any{
+		"account": accountID, "kind": "income", "amount": "5.00",
+		"category": "工资", "date": "2026-10-02T09:30:16",
+	}, http.StatusCreated)
+	secondSameSecond := client.object(t, http.MethodPost, "/api/transactions/", map[string]any{
+		"account": accountID, "kind": "expense", "amount": "3.00",
+		"category": "餐饮", "date": "2026-10-02T09:30:16",
+	}, http.StatusCreated)
+
+	for _, item := range []struct {
+		response map[string]any
+		date     string
+	}{
+		{late, "2026-10-31T23:59:59"},
+		{nextMonth, "2026-11-01T00:00:00"},
+		{earlier, "2026-10-02T09:30:15"},
+		{firstSameSecond, "2026-10-02T09:30:16"},
+		{secondSameSecond, "2026-10-02T09:30:16"},
+	} {
+		if got := mustString(t, item.response["date"]); got != item.date {
+			t.Fatalf("创建返回日期时间 = %q，期望 %q: %s",
+				got, item.date, mustJSON(t, item.response))
+		}
+	}
+
+	october := client.array(t, http.MethodGet, "/api/transactions/?month=2026-10", nil, http.StatusOK)
+	if len(october) != 4 {
+		t.Fatalf("十月应有 4 条交易，实际 %d: %s", len(october), mustJSON(t, october))
+	}
+	wantOctoberDates := []string{
+		"2026-10-31T23:59:59",
+		"2026-10-02T09:30:16",
+		"2026-10-02T09:30:16",
+		"2026-10-02T09:30:15",
+	}
+	for index, want := range wantOctoberDates {
+		if got := mustString(t, october[index]["date"]); got != want {
+			t.Fatalf("十月交易 #%d 日期时间 = %q，期望 %q: %s",
+				index, got, want, mustJSON(t, october))
+		}
+	}
+	if jsonInt64(t, october[1]["id"]) != jsonInt64(t, secondSameSecond["id"]) ||
+		jsonInt64(t, october[2]["id"]) != jsonInt64(t, firstSameSecond["id"]) {
+		t.Fatalf("同一秒交易应按 id 倒序: %s", mustJSON(t, october))
+	}
+
+	november := client.array(t, http.MethodGet, "/api/transactions/?month=2026-11", nil, http.StatusOK)
+	if len(november) != 1 || mustString(t, november[0]["date"]) != "2026-11-01T00:00:00" {
+		t.Fatalf("次月第一秒应归入次月: %s", mustJSON(t, november))
+	}
+
+	summary := client.object(t, http.MethodGet, "/api/summary/?month=2026-10", nil, http.StatusOK)
+	if mustString(t, summary["income"]) != "12.00" ||
+		mustString(t, summary["expense"]) != "13.00" ||
+		mustString(t, summary["net"]) != "-1.00" {
+		t.Fatalf("十月秒级汇总错误: %s", mustJSON(t, summary))
+	}
+	daily := mustSlice(t, summary["daily"])
+	if len(daily) != 2 {
+		t.Fatalf("同一日多个时间应合并为一天，实际 %d 天: %s", len(daily), mustJSON(t, daily))
+	}
+	secondDay := mustMap(t, daily[0])
+	lastDay := mustMap(t, daily[1])
+	if mustString(t, secondDay["date"]) != "2026-10-02" ||
+		mustString(t, secondDay["income"]) != "12.00" ||
+		mustString(t, secondDay["expense"]) != "3.00" ||
+		mustString(t, lastDay["date"]) != "2026-10-31" ||
+		mustString(t, lastDay["income"]) != "0.00" ||
+		mustString(t, lastDay["expense"]) != "10.00" {
+		t.Fatalf("每日秒级聚合错误: %s", mustJSON(t, daily))
+	}
+	novemberSummary := client.object(t, http.MethodGet, "/api/summary/?month=2026-11", nil, http.StatusOK)
+	novemberDaily := mustSlice(t, novemberSummary["daily"])
+	if mustString(t, novemberSummary["expense"]) != "20.00" ||
+		len(novemberDaily) != 1 ||
+		mustString(t, mustMap(t, novemberDaily[0])["date"]) != "2026-11-01" {
+		t.Fatalf("次月第一秒应归入次月统计: %s", mustJSON(t, novemberSummary))
+	}
+
+	// A patch that omits date preserves the stored second-precision value.
+	patched := client.object(t, http.MethodPatch,
+		fmt.Sprintf("/api/transactions/%d/", jsonInt64(t, late["id"])),
+		map[string]any{"amount": "11.00"}, http.StatusOK)
+	if mustString(t, patched["date"]) != "2026-10-31T23:59:59" {
+		t.Fatalf("省略日期的修改应保留原时间: %s", mustJSON(t, patched))
+	}
+
+	// A patch can move a transaction to a different date and second.
+	patched = client.object(t, http.MethodPatch,
+		fmt.Sprintf("/api/transactions/%d/", jsonInt64(t, earlier["id"])),
+		map[string]any{"date": "2026-10-03T08:00:01"}, http.StatusOK)
+	if mustString(t, patched["date"]) != "2026-10-03T08:00:01" {
+		t.Fatalf("修改日期时间响应错误: %s", mustJSON(t, patched))
+	}
+	october = client.array(t, http.MethodGet, "/api/transactions/?month=2026-10", nil, http.StatusOK)
+	if len(october) != 4 ||
+		mustString(t, october[0]["date"]) != "2026-10-31T23:59:59" ||
+		mustString(t, october[1]["date"]) != "2026-10-03T08:00:01" {
+		t.Fatalf("修改后列表应按完整时间倒序: %s", mustJSON(t, october))
+	}
+
+	for _, date := range []string{"2026-10-03", "2026-10-03T08:61:00"} {
+		response := client.do(http.MethodPatch,
+			fmt.Sprintf("/api/transactions/%d/", jsonInt64(t, earlier["id"])),
+			map[string]any{"date": date})
+		if response.status != http.StatusBadRequest {
+			t.Fatalf("非法修改日期时间 %q 状态码 = %d，期望 400；响应: %s",
+				date, response.status, string(response.body))
+		}
+		if _, exists := response.object(t)["date"]; !exists {
+			t.Fatalf("非法修改日期时间 %q 应返回 date 字段错误: %s",
+				date, string(response.body))
+		}
+	}
+	preserved := client.array(t, http.MethodGet, "/api/transactions/?month=2026-10", nil, http.StatusOK)
+	if len(preserved) != 4 ||
+		mustString(t, preserved[1]["date"]) != "2026-10-03T08:00:01" {
+		t.Fatalf("非法日期修改不应改动交易: %s", mustJSON(t, preserved))
+	}
+
+	summary = client.object(t, http.MethodGet, "/api/summary/?month=2026-10", nil, http.StatusOK)
+	daily = mustSlice(t, summary["daily"])
+	if len(daily) != 3 ||
+		mustString(t, mustMap(t, daily[1])["date"]) != "2026-10-03" ||
+		mustString(t, mustMap(t, daily[1])["income"]) != "7.00" ||
+		mustString(t, mustMap(t, daily[2])["date"]) != "2026-10-31" ||
+		mustString(t, mustMap(t, daily[2])["expense"]) != "11.00" {
+		t.Fatalf("修改时间后每日统计错误: %s", mustJSON(t, daily))
+	}
+}
+
+func TestTransferLifecycle(t *testing.T) {
+	env := newTestEnv(t)
+	admin := env.adminClient(t)
+	admin.createUser(t, "alice", strongPassword)
+	client := env.loginUser(t, "alice", strongPassword)
+
+	source := client.object(t, http.MethodPost, "/api/accounts/",
+		map[string]any{"name": "储蓄卡", "opening_balance": "1000.00"}, http.StatusCreated)
+	target := client.object(t, http.MethodPost, "/api/accounts/",
+		map[string]any{"name": "旅行钱包", "opening_balance": "100.00"}, http.StatusCreated)
+	sourceID := jsonInt64(t, source["id"])
+	targetID := jsonInt64(t, target["id"])
+
+	// A second household supplies a valid but foreign destination account.
+	_, _ = env.seedUser(t, "外家", "bob", strongPassword, false)
+	bob := env.loginUser(t, "bob", strongPassword)
+	foreignAccount := bob.object(t, http.MethodPost, "/api/accounts/",
+		map[string]any{"name": "外部账户", "opening_balance": "50.00"}, http.StatusCreated)
+	foreignAccountID := jsonInt64(t, foreignAccount["id"])
+
+	invalidTransfers := []map[string]any{
+		{"account": sourceID, "kind": "transfer", "amount": "10.00", "date": "2026-10-10T00:00:00"},
+		{"account": sourceID, "kind": "transfer", "amount": "10.00", "transfer_account": sourceID, "date": "2026-10-10T00:00:00"},
+		{"account": sourceID, "kind": "transfer", "amount": "10.00", "transfer_account": foreignAccountID, "date": "2026-10-10T00:00:00"},
+		{"account": sourceID, "kind": "transfer", "amount": "10.00", "transfer_account": 999999, "date": "2026-10-10T00:00:00"},
+		{"account": sourceID, "kind": "expense", "amount": "10.00", "category": "餐饮", "date": "2026-10-10T00:00:00", "transfer_account": targetID},
+	}
+	for index, body := range invalidTransfers {
+		response := client.do(http.MethodPost, "/api/transactions/", body)
+		if response.status != http.StatusBadRequest {
+			t.Fatalf("非法转账 #%d 状态码 = %d，期望 400；响应: %s",
+				index, response.status, string(response.body))
+		}
+	}
+	if got := len(client.array(t, http.MethodGet, "/api/transactions/", nil, http.StatusOK)); got != 0 {
+		t.Fatalf("非法转账不应写入交易，实际 %d 条", got)
+	}
+
+	// The category is fixed server-side even when the client sends another one.
+	transfer := client.object(t, http.MethodPost, "/api/transactions/", map[string]any{
+		"account": sourceID, "kind": "transfer", "amount": "200.00",
+		"category": "餐饮", "date": "2026-10-10T00:00:00", "note": "十月调仓",
+		"transfer_account": targetID,
+	}, http.StatusCreated)
+	transferID := jsonInt64(t, transfer["id"])
+	if mustString(t, transfer["kind"]) != "transfer" ||
+		jsonInt64(t, transfer["account"]) != sourceID ||
+		jsonInt64(t, transfer["transfer_account"]) != targetID ||
+		mustString(t, transfer["transfer_account_name"]) != "旅行钱包" ||
+		mustString(t, transfer["category"]) != "账户转账" ||
+		mustString(t, transfer["amount"]) != "200.00" {
+		t.Fatalf("转账响应字段错误: %s", mustJSON(t, transfer))
+	}
+
+	accounts := client.array(t, http.MethodGet, "/api/accounts/", nil, http.StatusOK)
+	if mustString(t, accounts[0]["balance"]) != "800.00" ||
+		mustString(t, accounts[1]["balance"]) != "300.00" {
+		t.Fatalf("转账后账户余额错误: %s", mustJSON(t, accounts))
+	}
+	summary := client.object(t, http.MethodGet, "/api/summary/?month=2026-10", nil, http.StatusOK)
+	if mustString(t, summary["income"]) != "0.00" ||
+		mustString(t, summary["expense"]) != "0.00" ||
+		mustString(t, summary["net"]) != "0.00" ||
+		mustString(t, summary["total_balance"]) != "1100.00" {
+		t.Fatalf("转账不应影响收支或家庭总余额: %s", mustJSON(t, summary))
+	}
+	if len(mustSlice(t, summary["categories"])) != 0 ||
+		len(mustSlice(t, summary["daily"])) != 0 {
+		t.Fatalf("转账不应进入分类或每日收支: %s", mustJSON(t, summary))
+	}
+
+	if got := len(client.array(t, http.MethodGet,
+		fmt.Sprintf("/api/transactions/?account=%d", sourceID), nil, http.StatusOK)); got != 1 {
+		t.Fatalf("转出账户过滤应包含转账，实际 %d", got)
+	}
+	targetFiltered := client.array(t, http.MethodGet,
+		fmt.Sprintf("/api/transactions/?account=%d", targetID), nil, http.StatusOK)
+	if len(targetFiltered) != 1 ||
+		jsonInt64(t, targetFiltered[0]["transfer_account"]) != targetID {
+		t.Fatalf("转入账户过滤应包含转账: %s", mustJSON(t, targetFiltered))
+	}
+	if got := len(client.array(t, http.MethodGet,
+		"/api/transactions/?kind=transfer", nil, http.StatusOK)); got != 1 {
+		t.Fatalf("转账类型过滤错误，实际 %d", got)
+	}
+	if got := len(client.array(t, http.MethodGet,
+		fmt.Sprintf("/api/transactions/?q=%s", url.QueryEscape("旅行钱包")), nil, http.StatusOK)); got != 1 {
+		t.Fatalf("按转入账户名搜索错误，实际 %d", got)
+	}
+
+	patched := client.object(t, http.MethodPatch,
+		fmt.Sprintf("/api/transactions/%d/", transferID),
+		map[string]any{"amount": "250.00", "note": "金额调整"}, http.StatusOK)
+	if mustString(t, patched["amount"]) != "250.00" ||
+		jsonInt64(t, patched["transfer_account"]) != targetID ||
+		mustString(t, patched["category"]) != "账户转账" {
+		t.Fatalf("修改转账响应错误: %s", mustJSON(t, patched))
+	}
+	accounts = client.array(t, http.MethodGet, "/api/accounts/", nil, http.StatusOK)
+	if mustString(t, accounts[0]["balance"]) != "750.00" ||
+		mustString(t, accounts[1]["balance"]) != "350.00" {
+		t.Fatalf("修改转账金额后余额错误: %s", mustJSON(t, accounts))
+	}
+
+	// The destination must stay in the household and differ from the source.
+	for index, body := range []map[string]any{
+		{"transfer_account": foreignAccountID},
+		{"transfer_account": sourceID},
+		{"account": targetID},
+		{"kind": "transfer", "transfer_account": nil},
+		{"kind": "expense", "category": "餐饮", "transfer_account": targetID},
+	} {
+		response := client.do(http.MethodPatch,
+			fmt.Sprintf("/api/transactions/%d/", transferID), body)
+		if response.status != http.StatusBadRequest {
+			t.Fatalf("非法转账修改 #%d 状态码 = %d，期望 400；响应: %s",
+				index, response.status, string(response.body))
+		}
+	}
+
+	// Switching to an expense clears the destination and applies expense
+	// semantics to the source account; converting back restores the transfer.
+	converted := client.object(t, http.MethodPatch,
+		fmt.Sprintf("/api/transactions/%d/", transferID),
+		map[string]any{
+			"kind": "expense", "category": "餐饮", "transfer_account": nil,
+		}, http.StatusOK)
+	if mustString(t, converted["kind"]) != "expense" ||
+		converted["transfer_account"] != nil ||
+		mustString(t, converted["transfer_account_name"]) != "" {
+		t.Fatalf("切换为支出后应清除转入账户: %s", mustJSON(t, converted))
+	}
+	accounts = client.array(t, http.MethodGet, "/api/accounts/", nil, http.StatusOK)
+	if mustString(t, accounts[0]["balance"]) != "750.00" ||
+		mustString(t, accounts[1]["balance"]) != "100.00" {
+		t.Fatalf("切换为支出后余额错误: %s", mustJSON(t, accounts))
+	}
+	summary = client.object(t, http.MethodGet, "/api/summary/?month=2026-10", nil, http.StatusOK)
+	if mustString(t, summary["expense"]) != "250.00" ||
+		mustString(t, summary["net"]) != "-250.00" ||
+		mustString(t, summary["total_balance"]) != "850.00" {
+		t.Fatalf("切换为支出后汇总错误: %s", mustJSON(t, summary))
+	}
+	if len(mustSlice(t, summary["categories"])) != 1 ||
+		len(mustSlice(t, summary["daily"])) != 1 {
+		t.Fatalf("切换为支出后应计入分类与每日趋势: %s", mustJSON(t, summary))
+	}
+
+	restored := client.object(t, http.MethodPatch,
+		fmt.Sprintf("/api/transactions/%d/", transferID),
+		map[string]any{
+			"kind": "transfer", "category": "餐饮", "transfer_account": targetID,
+		}, http.StatusOK)
+	if mustString(t, restored["kind"]) != "transfer" ||
+		jsonInt64(t, restored["transfer_account"]) != targetID ||
+		mustString(t, restored["category"]) != "账户转账" {
+		t.Fatalf("恢复转账后响应错误: %s", mustJSON(t, restored))
+	}
+	summary = client.object(t, http.MethodGet, "/api/summary/?month=2026-10", nil, http.StatusOK)
+	if mustString(t, summary["income"]) != "0.00" ||
+		mustString(t, summary["expense"]) != "0.00" ||
+		mustString(t, summary["total_balance"]) != "1100.00" ||
+		len(mustSlice(t, summary["categories"])) != 0 ||
+		len(mustSlice(t, summary["daily"])) != 0 {
+		t.Fatalf("恢复转账后收支统计应保持干净: %s", mustJSON(t, summary))
+	}
+
+	// Another household cannot read or mutate the transfer.
+	if got := len(bob.array(t, http.MethodGet, "/api/transactions/", nil, http.StatusOK)); got != 0 {
+		t.Fatalf("其他家庭不应看到转账，实际 %d 条", got)
+	}
+	bob.do(http.MethodPatch, fmt.Sprintf("/api/transactions/%d/", transferID),
+		map[string]any{"amount": "1.00"}).expect(t, http.StatusNotFound)
+	bob.do(http.MethodDelete, fmt.Sprintf("/api/transactions/%d/", transferID), nil).
+		expect(t, http.StatusNotFound)
+
+	client.do(http.MethodDelete, fmt.Sprintf("/api/transactions/%d/", transferID), nil).
+		expect(t, http.StatusNoContent)
+	accounts = client.array(t, http.MethodGet, "/api/accounts/", nil, http.StatusOK)
+	if mustString(t, accounts[0]["balance"]) != "1000.00" ||
+		mustString(t, accounts[1]["balance"]) != "100.00" {
+		t.Fatalf("删除转账后余额应恢复: %s", mustJSON(t, accounts))
+	}
+	summary = client.object(t, http.MethodGet, "/api/summary/?month=2026-10", nil, http.StatusOK)
+	if mustString(t, summary["total_balance"]) != "1100.00" ||
+		mustString(t, summary["income"]) != "0.00" ||
+		mustString(t, summary["expense"]) != "0.00" {
+		t.Fatalf("删除转账后汇总错误: %s", mustJSON(t, summary))
+	}
+	if got := len(client.array(t, http.MethodGet, "/api/transactions/", nil, http.StatusOK)); got != 0 {
+		t.Fatalf("删除转账后交易列表应为空，实际 %d 条", got)
+	}
+
+	// The new UI sends transfer_account:null for income and expense payloads.
+	income := client.object(t, http.MethodPost, "/api/transactions/", map[string]any{
+		"account": sourceID, "kind": "income", "amount": "5.00",
+		"category": "其他", "date": "2026-10-11T00:00:00", "transfer_account": nil,
+	}, http.StatusCreated)
+	if income["transfer_account"] != nil ||
+		mustString(t, income["transfer_account_name"]) != "" {
+		t.Fatalf("收入不应保存转入账户: %s", mustJSON(t, income))
+	}
+	client.do(http.MethodDelete,
+		fmt.Sprintf("/api/transactions/%d/", jsonInt64(t, income["id"])), nil).
+		expect(t, http.StatusNoContent)
 }

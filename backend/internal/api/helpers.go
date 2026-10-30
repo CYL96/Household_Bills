@@ -23,7 +23,7 @@ const maxRequestBodyBytes = 1 << 20
 var (
 	errMissingMoney = errors.New("未提供金额")
 	monthPattern    = regexp.MustCompile(`^[0-9]{4}-(0[1-9]|1[0-2])$`)
-	datePattern     = regexp.MustCompile(`^[0-9]{4}-[0-9]{2}-[0-9]{2}$`)
+	datePattern     = regexp.MustCompile(`^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}$`)
 )
 
 func abortDetail(c *gin.Context, status int, message string) {
@@ -104,17 +104,17 @@ func normalizeDate(value string) (string, bool) {
 	if !datePattern.MatchString(value) {
 		return "", false
 	}
-	parsed, err := time.Parse("2006-01-02", value)
+	parsed, err := time.Parse("2006-01-02T15:04:05", value)
 	if err != nil || parsed.Year() < 1 {
 		return "", false
 	}
-	return parsed.Format("2006-01-02"), true
+	return parsed.Format("2006-01-02T15:04:05"), true
 }
 
 func normalizeKind(value string) (string, bool) {
 	value = strings.TrimSpace(value)
 	switch value {
-	case "income", "expense":
+	case "income", "expense", "transfer":
 		return value, true
 	default:
 		return "", false
@@ -161,16 +161,18 @@ func accountResponse(account store.Account) gin.H {
 
 func transactionResponse(transaction store.Transaction) gin.H {
 	return gin.H{
-		"id":              transaction.ID,
-		"account":         transaction.AccountID,
-		"account_name":    transaction.AccountName,
-		"kind":            transaction.Kind,
-		"amount":          money.Format(transaction.AmountCents),
-		"category":        transaction.Category,
-		"date":            transaction.Date,
-		"note":            transaction.Note,
-		"created_by":      transaction.CreatedBy,
-		"created_by_name": transaction.CreatedByName,
+		"id":                    transaction.ID,
+		"account":               transaction.AccountID,
+		"account_name":          transaction.AccountName,
+		"transfer_account":      transaction.TransferAccountID,
+		"transfer_account_name": transaction.TransferAccountName,
+		"kind":                  transaction.Kind,
+		"amount":                money.Format(transaction.AmountCents),
+		"category":              transaction.Category,
+		"date":                  transaction.Date,
+		"note":                  transaction.Note,
+		"created_by":            transaction.CreatedBy,
+		"created_by_name":       transaction.CreatedByName,
 	}
 }
 
