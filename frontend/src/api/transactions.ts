@@ -7,6 +7,7 @@ export function listTransactions(filters: TransactionFilters = {}): Promise<Tran
   if (filters.account !== undefined) params.set('account', String(filters.account))
   if (filters.kind) params.set('kind', filters.kind)
   if (filters.q) params.set('q', filters.q)
+  for (const category of filters.category ?? []) params.append('category', category)
   const query = params.toString()
   return request<Transaction[]>(`/api/transactions/${query ? `?${query}` : ''}`)
 }

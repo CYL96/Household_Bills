@@ -37,10 +37,6 @@ const activeIconGroup = ref<CategoryIconGroupId>(DEFAULT_CATEGORY_ICON_GROUP)
 const errorMessage = ref('')
 
 const isEditing = computed(() => props.entry !== undefined)
-const kindLabel = computed(() => (props.kind === 'income' ? '收入' : '支出'))
-const editorTitle = computed(
-  () => `${isEditing.value ? '编辑' : '新增'}${kindLabel.value}分类`,
-)
 const submitLabel = computed(() =>
   isEditing.value ? '应用修改' : '添加到列表',
 )
@@ -183,22 +179,7 @@ function handleNameKeydown(event: Event | KeyboardEvent): void {
     ref="panelRef"
     class="category-editor"
     :class="{ 'is-fullscreen': fullscreen }"
-    aria-labelledby="category-editor-title"
   >
-    <header class="category-editor__header">
-      <h2 id="category-editor-title" class="category-editor__title">
-        {{ editorTitle }}
-      </h2>
-      <p class="category-editor__lead">
-        <template v-if="isEditing">
-          修改名称或图标后点击“应用修改”，只会更新当前草稿，保存设置后才写入本机。历史账目中的原分类名称不会被批量修改。
-        </template>
-        <template v-else>
-          新建的分类会加入当前草稿并显示在列表末尾，点击“添加到列表”后仍需保存设置。
-        </template>
-      </p>
-    </header>
-
     <div class="category-editor__field">
       <div class="category-editor__label-row">
         <label class="category-editor__label" for="category-editor-name">
@@ -241,9 +222,6 @@ function handleNameKeydown(event: Event | KeyboardEvent): void {
 
     <fieldset class="category-editor__icons">
       <legend class="category-editor__label">分类图标</legend>
-      <p id="category-editor-icon-hint" class="category-editor__icon-hint">
-        图标已按当前分类初始化，可按分组挑选更贴切的图标。
-      </p>
       <div class="category-icon-groups" role="group" aria-label="图标分组">
         <button
           v-for="group in CATEGORY_ICON_GROUPS"
@@ -311,27 +289,6 @@ function handleNameKeydown(event: Event | KeyboardEvent): void {
   min-width: 0;
 }
 
-.category-editor__header {
-  display: flex;
-  flex-direction: column;
-  gap: 5px;
-}
-
-.category-editor__title {
-  margin: 0;
-  color: var(--hb-ink);
-  font-size: 16px;
-  font-weight: 600;
-  line-height: 1.3;
-}
-
-.category-editor__lead {
-  margin: 0;
-  color: var(--hb-ink-soft);
-  font-size: 12px;
-  line-height: 1.7;
-}
-
 .category-editor__field {
   display: flex;
   flex-direction: column;
@@ -386,13 +343,6 @@ function handleNameKeydown(event: Event | KeyboardEvent): void {
   border: 0;
 }
 
-.category-editor__icon-hint {
-  margin: 6px 0 10px;
-  color: var(--hb-ink-faint);
-  font-size: 11.5px;
-  line-height: 1.6;
-}
-
 .category-editor__selection {
   margin: 0 0 10px;
   color: var(--hb-ink-soft);
@@ -419,7 +369,7 @@ function handleNameKeydown(event: Event | KeyboardEvent): void {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
-  margin-bottom: 10px;
+  margin: 10px 0;
 }
 
 .category-icon-group {
@@ -588,7 +538,6 @@ function handleNameKeydown(event: Event | KeyboardEvent): void {
   min-height: 100%;
 }
 
-.category-editor.is-fullscreen .category-editor__header,
 .category-editor.is-fullscreen .category-editor__field,
 .category-editor.is-fullscreen .category-editor__actions {
   flex: 0 0 auto;

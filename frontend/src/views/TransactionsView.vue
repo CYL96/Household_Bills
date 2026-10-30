@@ -31,11 +31,20 @@ import {
 const route = useRoute()
 const router = useRouter()
 
-function initialMonth(): string {
+function routeCategories(): string[] {
+  const value = route.query.category
+  const values = Array.isArray(value) ? value : [value]
+  return [...new Set(values.filter((name): name is string =>
+    typeof name === 'string' && name.trim() !== '',
+  ))]
+}
+
+function initialMonth(): string | null {
   const queryMonth = route.query.month
   if (typeof queryMonth === 'string' && /^\d{4}-(0[1-9]|1[0-2])$/.test(queryMonth)) {
     return queryMonth
   }
+  if (routeCategories().length > 0) return null
   return currentMonth()
 }
 
@@ -43,6 +52,7 @@ const monthFilter = ref<string | null>(initialMonth())
 const accountFilter = ref<number | ''>('')
 const kindFilter = ref<TransactionKind | ''>('')
 const searchQuery = ref('')
+const categoryFilter = ref<string[]>(routeCategories())
 
 const filtersOpen = ref(false)
 
@@ -51,6 +61,7 @@ const activeExtraFilterCount = computed(() => {
   if (typeof accountFilter.value === 'number') count += 1
   if (kindFilter.value !== '') count += 1
   if (searchQuery.value.trim() !== '') count += 1
+  if (categoryFilter.value.length > 0) count += 1
   return count
 })
 
@@ -150,6 +161,7 @@ async function loadTransactions(): Promise<void> {
         typeof accountFilter.value === 'number' ? accountFilter.value : undefined,
       kind: kindFilter.value || undefined,
       q: searchQuery.value.trim() || undefined,
+      category: categoryFilter.value,
     })
     if (request !== transactionsRequest) return
     transactions.value = result
@@ -166,6 +178,15 @@ function openCreate(kind: TransactionKind = 'expense'): void {
   editingTransaction.value = null
   initialKind.value = kind
   dialogVisible.value = true
+}
+
+function viewCategoryBills(selection: { kind: 'expense' | 'income'; categories: string[] }): void {
+  dialogVisible.value = false
+  monthFilter.value = null
+  accountFilter.value = ''
+  kindFilter.value = selection.kind
+  searchQuery.value = ''
+  categoryFilter.value = [...selection.categories]
 }
 
 /**
@@ -185,6 +206,8 @@ function isTransactionRow(row: unknown): row is Transaction {
     typeof candidate.category === 'string' &&
     typeof candidate.date === 'string' &&
     typeof candidate.note === 'string' &&
+    typeof candidate.owner === 'number' &&
+    typeof candidate.owner_name === 'string' &&
     (candidate.transfer_account === null ||
       typeof candidate.transfer_account === 'number') &&
     typeof candidate.transfer_account_name === 'string'
@@ -215,6 +238,15 @@ function resetFilters(): void {
   accountFilter.value = ''
   kindFilter.value = ''
   searchQuery.value = ''
+  clearCategoryFilter()
+}
+
+function clearCategoryFilter(): void {
+  categoryFilter.value = []
+  if (route.query.category === undefined) return
+  const query = { ...route.query }
+  delete query.category
+  void router.replace({ query })
 }
 
 async function confirmDelete(transaction: Transaction): Promise<void> {
@@ -267,6 +299,19 @@ async function consumeNewQuery(): Promise<void> {
   await router.replace({ query })
 }
 
+watch(
+  () => [route.query.category, route.query.kind, route.query.month],
+  () => {
+    categoryFilter.value = routeCategories()
+    if (categoryFilter.value.length === 0) return
+    kindFilter.value = isTransactionKind(route.query.kind) ? route.query.kind : ''
+    monthFilter.value = initialMonth()
+    accountFilter.value = ''
+    searchQuery.value = ''
+  },
+  { immediate: true },
+)
+
 onMounted(async () => {
   const queryKind = route.query.kind
   const requestedKind = isTransactionKind(queryKind) ? queryKind : 'expense'
@@ -277,7 +322,7 @@ onMounted(async () => {
   }
 })
 
-watch([monthFilter, accountFilter, kindFilter], () => {
+watch([monthFilter, accountFilter, kindFilter, categoryFilter], () => {
   void loadTransactions()
 })
 
@@ -370,6 +415,11 @@ onBeforeUnmount(() => {
           aria-label="重置筛选"
           @click="resetFilters"
         />
+      </div>
+
+      <div v-if="categoryFilter.length > 0" class="category-filter">
+        <span>分类：{{ categoryFilter.join('、') }}</span>
+        <el-button text size="small" @click="clearCategoryFilter">清除分类筛选</el-button>
       </div>
 
       <div v-show="filtersOpen" id="transaction-filter-more" class="filter-more">
@@ -486,7 +536,10 @@ onBeforeUnmount(() => {
                 <span class="kind-pill" :class="`kind-pill--${transaction.kind}`">
                   {{ kindLabel(transaction.kind) }}
                 </span>
-                <span>{{ transaction.created_by_name }} 记录</span>
+                <span
+                  class="tx-card__owner"
+                  :title="transaction.owner_name || '未知成员'"
+                >{{ transaction.owner_name || '未知成员' }}</span>
               </div>
               <div class="tx-card__actions">
                 <el-button
@@ -592,9 +645,14 @@ onBeforeUnmount(() => {
           </template>
         </el-table-column>
 
-        <el-table-column label="记录人" width="102">
+        <el-table-column label="成员" width="96">
           <template #default="{ row }">
-            <span class="creator-cell">{{ row.created_by_name }}</span>
+            <span
+              class="owner-cell"
+              :title="row.owner_name || '未知成员'"
+            >
+              {{ row.owner_name || '未知成员' }}
+            </span>
           </template>
         </el-table-column>
 
@@ -650,6 +708,7 @@ onBeforeUnmount(() => {
       :transaction="editingTransaction"
       :accounts="accounts"
       :initial-kind="initialKind"
+      @view-bills="viewCategoryBills"
     />
   </div>
 </template>
@@ -690,6 +749,16 @@ onBeforeUnmount(() => {
 .filter-panel {
   padding: 14px 16px;
   margin-bottom: 15px;
+}
+
+.category-filter {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
+  font-size: 12px;
+  color: var(--hb-ink-soft);
 }
 
 .filter-summary {
@@ -877,7 +946,15 @@ onBeforeUnmount(() => {
   font-size: 12px;
 }
 
-.creator-cell,
+.owner-cell {
+  display: block;
+  overflow: hidden;
+  color: var(--hb-ink-soft);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .cell-muted {
   color: var(--hb-ink-faint);
   font-size: 11px;
@@ -1042,6 +1119,18 @@ onBeforeUnmount(() => {
   min-width: 0;
   color: var(--hb-ink-faint);
   font-size: 10px;
+}
+
+.tx-card__owner {
+  min-width: 0;
+  max-width: 9rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tx-card__owner {
+  color: var(--hb-ink-soft);
 }
 
 .tx-card__actions {

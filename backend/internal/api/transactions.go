@@ -11,6 +11,8 @@ import (
 	"household-bills/backend/internal/store"
 )
 
+const transactionOwnerErrorMessage = "记账归属成员不存在。"
+
 type transactionCreateRequest struct {
 	Account         *int64          `json:"account"`
 	Kind            *string         `json:"kind"`
@@ -19,6 +21,7 @@ type transactionCreateRequest struct {
 	Date            *string         `json:"date"`
 	Note            *string         `json:"note"`
 	TransferAccount *int64          `json:"transfer_account"`
+	Owner           json.RawMessage `json:"owner"`
 }
 
 type transactionPatchRequest struct {
@@ -29,6 +32,7 @@ type transactionPatchRequest struct {
 	Date            *string         `json:"date"`
 	Note            *string         `json:"note"`
 	TransferAccount json.RawMessage `json:"transfer_account"`
+	Owner           json.RawMessage `json:"owner"`
 }
 
 func (a *API) handleListTransactions(c *gin.Context) {
@@ -63,6 +67,18 @@ func (a *API) handleListTransactions(c *gin.Context) {
 			return
 		}
 		filters.Kind = kind
+	}
+	if categoryValues, present := c.GetQueryArray("category"); present {
+		categories := make([]string, 0, len(categoryValues))
+		for _, categoryValue := range categoryValues {
+			category, message := cleanText(categoryValue, 64, "分类")
+			if message != "" {
+				abortFields(c, map[string][]string{"category": {message}})
+				return
+			}
+			categories = append(categories, category)
+		}
+		filters.Categories = categories
 	}
 	if queryValue, present := c.GetQuery("q"); present {
 		queryValue = strings.TrimSpace(queryValue)
@@ -172,6 +188,15 @@ func (a *API) handleCreateTransaction(c *gin.Context) {
 			note = *request.Note
 		}
 	}
+	var ownerID *int64
+	if request.Owner != nil {
+		parsedOwnerID, ownerSet, ownerOK := parseOwnerRaw(request.Owner)
+		if !ownerOK || !ownerSet || parsedOwnerID == nil {
+			fields["owner"] = []string{transactionOwnerErrorMessage}
+		} else {
+			ownerID = parsedOwnerID
+		}
+	}
 	if len(fields) > 0 {
 		abortFields(c, fields)
 		return
@@ -191,6 +216,7 @@ func (a *API) handleCreateTransaction(c *gin.Context) {
 			Category:          category,
 			Date:              date,
 			Note:              note,
+			OwnerID:           ownerID,
 		})
 	if errors.Is(err, store.ErrInvalidAccount) {
 		abortFields(c, map[string][]string{"account": {"账户不存在或不属于当前家庭。"}})
@@ -206,6 +232,10 @@ func (a *API) handleCreateTransaction(c *gin.Context) {
 		abortFields(c, map[string][]string{
 			"transfer_account": {"只有转账交易才能设置转入账户。"},
 		})
+		return
+	}
+	if errors.Is(err, store.ErrInvalidOwner) {
+		abortFields(c, map[string][]string{"owner": {transactionOwnerErrorMessage}})
 		return
 	}
 	if err != nil {
@@ -292,6 +322,14 @@ func (a *API) handlePatchTransaction(c *gin.Context) {
 			patch.Note = request.Note
 		}
 	}
+	if request.Owner != nil {
+		ownerID, ownerSet, ownerOK := parseOwnerRaw(request.Owner)
+		if !ownerOK || !ownerSet || ownerID == nil {
+			fields["owner"] = []string{transactionOwnerErrorMessage}
+		} else {
+			patch.OwnerID = ownerID
+		}
+	}
 	if patch.Kind != nil {
 		if *patch.Kind != "transfer" && patch.TransferAccountSet &&
 			patch.TransferAccountID != nil {
@@ -331,6 +369,10 @@ func (a *API) handlePatchTransaction(c *gin.Context) {
 		abortFields(c, map[string][]string{
 			"transfer_account": {"只有转账交易才能设置转入账户。"},
 		})
+		return
+	}
+	if errors.Is(err, store.ErrInvalidOwner) {
+		abortFields(c, map[string][]string{"owner": {transactionOwnerErrorMessage}})
 		return
 	}
 	if err != nil {

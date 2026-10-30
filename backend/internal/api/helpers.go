@@ -73,8 +73,9 @@ func parseMoneyRaw(raw json.RawMessage) (int64, error) {
 }
 
 // parseOwnerRaw distinguishes an omitted owner field from an explicit JSON
-// null. Null clears the owner, a positive integer assigns one, and every other
-// shape (zero, negative, fractional, string, boolean, object) is invalid.
+// null. A positive integer assigns an owner, and every other shape (zero,
+// negative, fractional, string, boolean, object) is invalid. Callers decide
+// whether an explicit null clears an optional owner or is rejected.
 func parseOwnerRaw(raw json.RawMessage) (id *int64, set bool, ok bool) {
 	if raw == nil {
 		return nil, false, true
@@ -190,6 +191,8 @@ func transactionResponse(transaction store.Transaction) gin.H {
 		"category":              transaction.Category,
 		"date":                  transaction.Date,
 		"note":                  transaction.Note,
+		"owner":                 transaction.OwnerID,
+		"owner_name":            transaction.OwnerName,
 		"created_by":            transaction.CreatedBy,
 		"created_by_name":       transaction.CreatedByName,
 	}

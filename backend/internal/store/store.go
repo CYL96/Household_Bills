@@ -10,7 +10,7 @@ import (
 
 var (
 	ErrNotFound                  = errors.New("记录不存在")
-	ErrInvalidOwner              = errors.New("账户归属成员不存在")
+	ErrInvalidOwner              = errors.New("归属成员不存在")
 	ErrInvalidAccount            = errors.New("账户不存在")
 	ErrInvalidTransfer           = errors.New("转入账户无效")
 	ErrBalanceOutOfRange         = errors.New("余额超出允许范围")
@@ -108,6 +108,9 @@ type Account struct {
 	OwnerName           string
 }
 
+// Transaction separates the recorder (CreatedBy) from the member the money
+// belongs to (OwnerID). Both always reference active or soft-deleted users in
+// the same household; CreatedBy never changes after insertion.
 type Transaction struct {
 	ID                  int64
 	AccountID           int64
@@ -121,6 +124,8 @@ type Transaction struct {
 	Note                string
 	CreatedBy           int64
 	CreatedByName       string
+	OwnerID             int64
+	OwnerName           string
 }
 
 // AccountUpdate leaves fields nil when they were omitted. Balance carries the
@@ -135,6 +140,9 @@ type AccountUpdate struct {
 	OwnerSet bool
 }
 
+// TransactionInput describes a new ledger row. A nil OwnerID attributes the
+// transaction to the recording user; a non-nil value must be an active member
+// of the same household.
 type TransactionInput struct {
 	AccountID         int64
 	TransferAccountID *int64
@@ -143,11 +151,14 @@ type TransactionInput struct {
 	Category          string
 	Date              string
 	Note              string
+	OwnerID           *int64
 }
 
-// TransactionPatch leaves fields nil when they were omitted. TransferAccountSet
-// distinguishes an omitted transfer_account from an explicit null, since an
-// explicit null must clear the destination while an omitted field preserves it.
+// TransactionPatch leaves fields nil when they were omitted.
+// TransferAccountSet distinguishes an omitted transfer_account from an explicit
+// null, since an explicit null must clear the destination while an omitted
+// field preserves it. OwnerID nil preserves the current attribution; a non-nil
+// value reassigns it without ever changing the recorder.
 type TransactionPatch struct {
 	AccountID          *int64
 	TransferAccountID  *int64
@@ -157,6 +168,7 @@ type TransactionPatch struct {
 	Category           *string
 	Date               *string
 	Note               *string
+	OwnerID            *int64
 }
 
 type TransactionFilters struct {
@@ -164,6 +176,7 @@ type TransactionFilters struct {
 	MonthEnd   string
 	AccountID  *int64
 	Kind       string
+	Categories []string
 	Query      string
 }
 

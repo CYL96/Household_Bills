@@ -1855,3 +1855,92 @@ func TestTransferLifecycle(t *testing.T) {
 		fmt.Sprintf("/api/transactions/%d/", jsonInt64(t, income["id"])), nil).
 		expect(t, http.StatusNoContent)
 }
+
+func TestTransactionCategoryFilter(t *testing.T) {
+	env := newTestEnv(t)
+	admin := env.adminClient(t)
+
+	mainAccount := admin.object(t, http.MethodPost, "/api/accounts/",
+		map[string]any{"name": "分类账户", "balance": "0.00"}, http.StatusCreated)
+	mainAccountID := jsonInt64(t, mainAccount["id"])
+	secondAccount := admin.object(t, http.MethodPost, "/api/accounts/",
+		map[string]any{"name": "分类第二账户", "balance": "0.00"}, http.StatusCreated)
+	secondAccountID := jsonInt64(t, secondAccount["id"])
+
+	for _, transaction := range []map[string]any{
+		{"account": mainAccountID, "kind": "expense", "amount": "10.00",
+			"category": "餐饮", "date": "2026-10-01T00:00:00"},
+		{"account": mainAccountID, "kind": "expense", "amount": "5.00",
+			"category": "早餐", "date": "2026-10-02T00:00:00"},
+		{"account": mainAccountID, "kind": "expense", "amount": "20.00",
+			"category": "交通", "date": "2026-10-03T00:00:00", "note": "餐饮和早餐"},
+		{"account": mainAccountID, "kind": "income", "amount": "100.00",
+			"category": "工资", "date": "2026-10-04T00:00:00"},
+		{"account": secondAccountID, "kind": "expense", "amount": "8.00",
+			"category": "早餐", "date": "2026-10-05T00:00:00"},
+	} {
+		admin.object(t, http.MethodPost, "/api/transactions/", transaction, http.StatusCreated)
+	}
+
+	categoryFilter := func(categories ...string) string {
+		query := url.Values{}
+		for _, category := range categories {
+			query.Add("category", category)
+		}
+		return "/api/transactions/?" + query.Encode()
+	}
+
+	if got := len(admin.array(t, http.MethodGet, "/api/transactions/", nil, http.StatusOK)); got != 5 {
+		t.Fatalf("未传 category 时应返回全部交易，实际 %d 条", got)
+	}
+
+	filtered := admin.array(t, http.MethodGet, categoryFilter("餐饮", "早餐"), nil, http.StatusOK)
+	if len(filtered) != 3 {
+		t.Fatalf("多分类过滤应返回 3 条交易，实际 %d 条: %s", len(filtered), mustJSON(t, filtered))
+	}
+	for _, transaction := range filtered {
+		category := mustString(t, transaction["category"])
+		if category != "餐饮" && category != "早餐" {
+			t.Fatalf("多分类过滤返回了非目标分类: %s", mustJSON(t, filtered))
+		}
+	}
+
+	if got := len(admin.array(t, http.MethodGet, categoryFilter("早餐"), nil, http.StatusOK)); got != 2 {
+		t.Fatalf("分类过滤不应按备注匹配，实际 %d 条", got)
+	}
+	if got := len(admin.array(t, http.MethodGet, categoryFilter("餐"), nil, http.StatusOK)); got != 0 {
+		t.Fatalf("分类过滤应为精确匹配，实际 %d 条", got)
+	}
+	if got := len(admin.array(t, http.MethodGet,
+		categoryFilter("早餐", "工资")+"&kind=income", nil, http.StatusOK)); got != 1 {
+		t.Fatalf("分类过滤应与收支类型相交，实际 %d 条", got)
+	}
+	if got := len(admin.array(t, http.MethodGet,
+		categoryFilter("早餐")+fmt.Sprintf("&account=%d", secondAccountID), nil, http.StatusOK)); got != 1 {
+		t.Fatalf("分类过滤应与账户过滤相交，实际 %d 条", got)
+	}
+
+	_, _ = env.seedUser(t, "分类隔离家庭", "bob", strongPassword, false)
+	bob := env.loginUser(t, "bob", strongPassword)
+	bobAccount := bob.object(t, http.MethodPost, "/api/accounts/",
+		map[string]any{"name": "乙分类账户", "balance": "0.00"}, http.StatusCreated)
+	bob.object(t, http.MethodPost, "/api/transactions/", map[string]any{
+		"account": jsonInt64(t, bobAccount["id"]), "kind": "expense", "amount": "6.00",
+		"category": "早餐", "date": "2026-10-06T00:00:00",
+	}, http.StatusCreated)
+	if got := len(bob.array(t, http.MethodGet, categoryFilter("早餐"), nil, http.StatusOK)); got != 1 {
+		t.Fatalf("分类过滤应保持家庭隔离，乙应只看到 1 条交易，实际 %d 条", got)
+	}
+	if got := len(admin.array(t, http.MethodGet, categoryFilter("早餐"), nil, http.StatusOK)); got != 2 {
+		t.Fatalf("分类过滤不应返回其他家庭交易，实际 %d 条", got)
+	}
+
+	for _, invalidCategory := range []string{"", strings.Repeat("餐", 65), "餐\x00饮"} {
+		response := admin.do(http.MethodGet, categoryFilter(invalidCategory), nil)
+		response.expect(t, http.StatusBadRequest)
+		if _, exists := response.object(t)["category"]; !exists {
+			t.Fatalf("非法分类 %#v 应返回 category 字段错误: %s",
+				invalidCategory, string(response.body))
+		}
+	}
+}

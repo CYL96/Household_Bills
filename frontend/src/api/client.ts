@@ -37,7 +37,7 @@ const FIELD_LABELS: Record<string, string> = {
   nickname: '昵称',
   password: '密码',
   name: '名称',
-  owner: '账户归属',
+  owner: '归属成员',
   balance: '当前余额',
   account: '资金账户',
   transfer_account: '转入账户',

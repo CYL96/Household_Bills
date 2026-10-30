@@ -1,11 +1,20 @@
 <script setup lang="ts">
-import { computed, nextTick, reactive, ref, watch } from 'vue'
+import {
+  computed,
+  nextTick,
+  onBeforeUnmount,
+  reactive,
+  ref,
+  watch,
+  type CSSProperties,
+} from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, type FormInstance, type FormRules } from 'element-plus'
 import {
   ArrowDown,
   Back,
   Check,
+  Close,
   Loading,
   Setting,
   Switch as SwitchIcon,
@@ -19,19 +28,22 @@ import type {
   Transaction,
   TransactionKind,
   TransactionPayload,
+  User,
 } from '../api/types'
 import { useMediaQuery } from '../composables/useMediaQuery'
-import { authState } from '../stores/auth'
+import { authState, familyMembers } from '../stores/auth'
 import {
+  isCategoryVisible,
   readCategoryEntries,
-  visibleCategorySuggestions,
   type CategoryEntry,
   type CategoryKind,
 } from '../stores/categories'
 import { markDataChanged } from '../stores/data'
 import { categoryIcon, type CategoryIconId } from '../utils/categoryIcons'
 import { decimalString, nowLocalDateTime } from '../utils/format'
+import { displayInitial, displayName } from '../utils/user'
 import CategorySettingsDialog from './CategorySettingsDialog.vue'
+import UserAvatar from './UserAvatar.vue'
 
 const props = defineProps<{
   modelValue: boolean
@@ -43,16 +55,56 @@ const props = defineProps<{
 const emit = defineEmits<{
   (event: 'update:modelValue', value: boolean): void
   (event: 'saved'): void
+  (
+    event: 'view-bills',
+    payload: { kind: CategoryKind; categories: string[] },
+  ): void
 }>()
 
 const router = useRouter()
 const isMobile = useMediaQuery('(max-width: 760px)')
 const amountDockRef = ref<HTMLElement | null>(null)
 const walletStripRef = ref<HTMLElement | null>(null)
+const categoryGridRef = ref<HTMLElement | null>(null)
+const subcategoryBackRef = ref<HTMLButtonElement | null>(null)
+const subcategoryOpen = ref(false)
+const subcategoryParentName = ref<string | null>(null)
+const lastSubcategoryParentName = ref('')
+const restoreSubcategoryFocus = ref(false)
+const subcategoryPanelRef = ref<HTMLElement | null>(null)
+
+type SubcategoryPlacement = 'below' | 'above'
+
+interface SubcategoryPosition {
+  top: number
+  left: number
+  width: number
+  arrowLeft: number
+  placement: SubcategoryPlacement
+  bodyMaxHeight: number
+}
+
+const subcategoryPosition = ref<SubcategoryPosition | null>(null)
+const subcategoryDialogStyle = computed<CSSProperties>(() => {
+  const position = subcategoryPosition.value
+  if (!position) return {}
+  return {
+    '--sc-dialog-top': `${position.top.toFixed(1)}px`,
+    '--sc-dialog-left': `${position.left.toFixed(1)}px`,
+    '--sc-dialog-width': `${position.width.toFixed(1)}px`,
+    '--sc-dialog-arrow': `${position.arrowLeft.toFixed(1)}px`,
+    '--sc-dialog-body-max': `${position.bodyMaxHeight.toFixed(1)}px`,
+  }
+})
 
 const TRANSFER_CATEGORY = '账户转账'
 const MAX_INTEGER_DIGITS = 10
 const MAX_AMOUNT = 9999999999.99
+const SUBCATEGORY_PANEL_MAX_WIDTH = 440
+const SUBCATEGORY_PANEL_GUTTER = 12
+const SUBCATEGORY_PANEL_GAP = 10
+const SUBCATEGORY_PANEL_MIN_BODY = 96
+const SUBCATEGORY_PANEL_FALLBACK_BODY = 300
 
 const formRef = ref<FormInstance>()
 const amountInputRef = ref<HTMLInputElement | null>(null)
@@ -71,6 +123,8 @@ interface TransactionFormState {
   /** Local civil date-time as YYYY-MM-DDTHH:mm:ss (seconds included). */
   date: string
   note: string
+  /** 记账归属用户 ID；新账目默认为当前登录用户。 */
+  owner: number | undefined
 }
 
 const form = reactive<TransactionFormState>({
@@ -81,6 +135,7 @@ const form = reactive<TransactionFormState>({
   category: '',
   date: nowLocalDateTime(),
   note: '',
+  owner: undefined,
 })
 
 let lastKind: TransactionKind = 'expense'
@@ -130,29 +185,102 @@ function iconForCategory(name: string) {
   return categoryIcon(name, categoryIconIds.value.get(name))
 }
 
-/**
- * Visible category names in configured order. While editing a historical
- * transaction whose category was never configured, keep it available so it
- * stays visible and manageable. Hidden categories are part of the stored
- * configuration, so they are never resurrected this way.
- */
-const categoryDisplay = computed<string[]>(() => {
-  if (form.kind === 'transfer') return []
+/** Match a stored/selected name using the same alias rules as the store. */
+function findCategoryEntry(
+  entries: CategoryEntry[],
+  name: string,
+): CategoryEntry | undefined {
+  const target = name.trim()
+  if (!target) return undefined
+  return entries.find(
+    (entry) =>
+      entry.name === target ||
+      entry.defaultName === target ||
+      entry.previousNames?.includes(target) === true,
+  )
+}
+
+function resolveCategoryEntry(name: string): CategoryEntry | undefined {
+  return findCategoryEntry(categoryEntries.value, name)
+}
+
+function visibleChildrenOf(entry: CategoryEntry): CategoryEntry[] {
   const entries = categoryEntries.value
-  const options = entries
-    .filter((entry) => entry.visible)
-    .map((entry) => entry.name)
-  const historical = historicalCategory.value
-  if (!historical || options.includes(historical)) return options
-  const configured = entries.some((entry) => entry.name === historical)
-  return configured ? options : [...options, historical]
+  return entries.filter(
+    (child) =>
+      child.parentName === entry.name && isCategoryVisible(child, entries),
+  )
+}
+
+const selectedCategoryEntry = computed(() =>
+  resolveCategoryEntry(form.category),
+)
+
+const selectedParentEntry = computed<CategoryEntry | null>(() => {
+  const entry = selectedCategoryEntry.value
+  if (!entry) return null
+  if (!entry.parentName) return entry
+  return (
+    categoryEntries.value.find(
+      (candidate) =>
+        !candidate.parentName && candidate.name === entry.parentName,
+    ) ?? null
+  )
 })
 
-/** Ensure the historical category is manageable even after picking another. */
-const categorySettingsCurrent = computed(() => {
-  if (historicalCategory.value) return historicalCategory.value
-  return form.category
+const selectedChildEntry = computed<CategoryEntry | null>(() => {
+  const entry = selectedCategoryEntry.value
+  return entry?.parentName ? entry : null
 })
+
+/**
+ * Top-level tile that should look active. A selected child activates its
+ * parent tile; hidden/deleted selections stay preserved without a fake tile.
+ */
+const selectedTopName = computed<string>(() => {
+  const parent = selectedParentEntry.value
+  if (parent) return parent.name
+  return ''
+})
+
+/** Main grid offers effective visible top-level categories only. */
+const topLevelCategories = computed<CategoryEntry[]>(() => {
+  const entries = categoryEntries.value
+  return entries.filter(
+    (entry) => !entry.parentName && isCategoryVisible(entry, entries),
+  )
+})
+
+function selectedChildLabelFor(entry: CategoryEntry): string {
+  if (selectedTopName.value !== entry.name) return ''
+  const child = selectedChildEntry.value
+  if (!child) return ''
+  const hidden = !isCategoryVisible(child, categoryEntries.value)
+  return hidden ? `${child.name}（已停用）` : child.name
+}
+
+function categoryTileLabel(entry: CategoryEntry): string {
+  const child = selectedChildLabelFor(entry)
+  if (child) return `${entry.name}，当前子分类：${child}`
+  const count = visibleChildrenOf(entry).length
+  return count > 0 ? `${entry.name}，${count} 个子分类` : entry.name
+}
+
+const categorySelectionNotice = computed<string>(() => {
+  if (!isEditing.value) return ''
+  const raw = form.category.trim()
+  if (!raw) return ''
+  const entry = selectedCategoryEntry.value
+  if (!entry) return `当前分类「${raw}」已不存在，保存将保留该分类`
+  if (!isCategoryVisible(entry, categoryEntries.value)) {
+    const label = entry.parentName
+      ? `${entry.parentName} / ${entry.name}`
+      : entry.name
+    return `当前分类「${label}」已停用，保存将保留该分类`
+  }
+  return ''
+})
+
 
 const categorySettingsKind = computed<CategoryKind>(() =>
   form.kind === 'income' ? 'income' : 'expense',
@@ -167,6 +295,93 @@ const saveDisabled = computed(
 )
 
 const inputDisabled = computed(() => saving.value || props.accounts.length === 0)
+
+interface OwnerOption {
+  id: number
+  name: string
+  initial: string
+  user: User
+}
+
+interface OwnerDisplay {
+  name: string
+  initial: string
+  user: User | null
+}
+
+function ownerOptionFor(user: User): OwnerOption {
+  return {
+    id: user.id,
+    name: displayName(user),
+    initial: displayInitial(user),
+    user,
+  }
+}
+
+/**
+ * Current user first, then ordinary household members, deduplicated by id.
+ * Administrators other than the current user are never offered.
+ */
+const ownerOptions = computed<OwnerOption[]>(() => {
+  const options: OwnerOption[] = []
+  const seen = new Set<number>()
+  const currentUser = authState.user
+  if (currentUser) {
+    options.push(ownerOptionFor(currentUser))
+    seen.add(currentUser.id)
+  }
+  for (const member of familyMembers.value) {
+    if (seen.has(member.id)) continue
+    options.push(ownerOptionFor(member))
+    seen.add(member.id)
+  }
+  return options
+})
+
+function initialForName(name: string): string {
+  return [...name][0]?.toUpperCase() ?? '?'
+}
+
+/**
+ * Displayed owner may be a historical value that is no longer selectable
+ * (for example a soft-deleted member). Keep its stored name and fall back to
+ * the name initial when no avatar data exists.
+ */
+const selectedOwner = computed<OwnerDisplay>(() => {
+  const option = ownerOptions.value.find((item) => item.id === form.owner)
+  if (option) return option
+
+  const member = authState.members.find((item) => item.id === form.owner)
+  if (member) {
+    return {
+      name: displayName(member),
+      initial: displayInitial(member),
+      user: member,
+    }
+  }
+
+  const source = props.transaction
+  const storedName =
+    source && source.owner === form.owner
+      ? (source.owner_name || '').trim()
+      : ''
+  const name = storedName || '未知成员'
+  return { name, initial: initialForName(name), user: null }
+})
+
+const ownerTriggerLabel = computed(
+  () => `记账归属：${selectedOwner.value.name}，点击切换`,
+)
+
+const ownerSelectionDisabled = computed(
+  () => inputDisabled.value || ownerOptions.value.length === 0,
+)
+
+function handleOwnerCommand(command: string | number | object): void {
+  if (typeof command !== 'number' || ownerSelectionDisabled.value) return
+  if (!ownerOptions.value.some((option) => option.id === command)) return
+  form.owner = command
+}
 
 interface WalletGroup {
   key: 'personal' | 'public' | 'other'
@@ -210,7 +425,11 @@ const orderedAccounts = computed<Account[]>(() =>
 
 function defaultCategory(kind: TransactionKind): string {
   if (kind === 'transfer') return TRANSFER_CATEGORY
-  return visibleCategorySuggestions(kind)[0] ?? ''
+  const entries = readCategoryEntries(kind)
+  const topLevel = entries.find(
+    (entry) => !entry.parentName && isCategoryVisible(entry, entries),
+  )
+  return topLevel?.name ?? ''
 }
 
 const rules: FormRules = {
@@ -355,9 +574,11 @@ function ensureTransferAccounts(): void {
 function resetForm(): void {
   errorMessage.value = ''
   categorySettingsOpen.value = false
+  closeSubcategory()
   focusAmountAfterSave.value = false
   form.transferAccount = undefined
   form.note = ''
+  form.owner = authState.user?.id
   form.amount = ''
   form.date = nowLocalDateTime()
   form.account = undefined
@@ -374,6 +595,7 @@ function resetForm(): void {
         : props.transaction.category || defaultCategory(props.transaction.kind)
     form.date = props.transaction.date
     form.note = props.transaction.note ?? ''
+    form.owner = props.transaction.owner ?? authState.user?.id
     form.transferAccount =
       props.transaction.kind === 'transfer'
         ? props.transaction.transfer_account ?? undefined
@@ -397,6 +619,7 @@ function resetForm(): void {
 function closeDialog(force = false): void {
   if (saving.value && !force) return
   categorySettingsOpen.value = false
+  closeSubcategory()
   emit('update:modelValue', false)
 }
 
@@ -416,7 +639,7 @@ function handleKindChange(value: unknown): void {
   lastKind = next
   errorMessage.value = ''
   categorySettingsOpen.value = false
-
+  closeSubcategory()
   if (next === 'transfer') {
     form.category = TRANSFER_CATEGORY
     ensureTransferAccounts()
@@ -432,6 +655,341 @@ function handleKindChange(value: unknown): void {
   })
 }
 
+const subcategoryParent = computed<CategoryEntry | null>(() => {
+  const parentName = subcategoryParentName.value
+  if (!parentName) return null
+  return (
+    categoryEntries.value.find(
+      (entry) => !entry.parentName && entry.name === parentName,
+    ) ?? null
+  )
+})
+
+const subcategoryChildren = computed<CategoryEntry[]>(() => {
+  const parent = subcategoryParent.value
+  return parent ? visibleChildrenOf(parent) : []
+})
+
+const subcategoryDialogVisible = computed<boolean>({
+  get: () => subcategoryOpen.value,
+  set: (value) => {
+    if (!value) closeSubcategory(true)
+  },
+})
+
+function isSubcategoryParentSelected(parent: CategoryEntry): boolean {
+  const entry = selectedCategoryEntry.value
+  return Boolean(entry && !entry.parentName && entry.name === parent.name)
+}
+
+function isSubcategoryChildSelected(child: CategoryEntry): boolean {
+  return selectedCategoryEntry.value?.name === child.name
+}
+
+function categoryTileFor(name: string): HTMLElement | null {
+  const buttons =
+    categoryGridRef.value?.querySelectorAll<HTMLElement>('.category-tile')
+  if (!buttons) return null
+  return (
+    Array.from(buttons).find(
+      (button) => button.dataset.categoryName === name,
+    ) ?? null
+  )
+}
+
+function focusCategoryTile(name: string): void {
+  void nextTick(() => {
+    categoryTileFor(name)?.focus()
+  })
+}
+
+function subcategoryViewport(): {
+  left: number
+  top: number
+  width: number
+  height: number
+} {
+  const visualViewport = window.visualViewport
+  return {
+    left: visualViewport?.offsetLeft ?? 0,
+    top: visualViewport?.offsetTop ?? 0,
+    width: visualViewport?.width ?? window.innerWidth,
+    height: visualViewport?.height ?? window.innerHeight,
+  }
+}
+
+/**
+ * Natural panel metrics used before the dialog body clips its content:
+ * header box, unclipped panel content, and the body's vertical padding.
+ */
+function readSubcategoryPanelMetrics(): {
+  headerHeight: number
+  bodyHeight: number
+  paddingY: number
+} {
+  const panel = subcategoryPanelRef.value
+  const dialog = panel?.closest<HTMLElement>('.el-dialog') ?? null
+  const header = dialog?.querySelector<HTMLElement>('.el-dialog__header') ?? null
+  const body = panel?.parentElement ?? null
+  const headerHeight = header
+    ? Math.max(header.getBoundingClientRect().height, header.offsetHeight)
+    : 0
+  const panelHeight = panel
+    ? Math.max(
+        panel.getBoundingClientRect().height,
+        panel.offsetHeight,
+        panel.scrollHeight,
+      )
+    : 0
+  const bodyStyle = body ? window.getComputedStyle(body) : null
+  const paddingTop = Number.parseFloat(bodyStyle?.paddingTop ?? '') || 0
+  const paddingBottom = Number.parseFloat(bodyStyle?.paddingBottom ?? '') || 0
+  return {
+    headerHeight: headerHeight || 46,
+    bodyHeight: panelHeight || SUBCATEGORY_PANEL_FALLBACK_BODY,
+    paddingY: paddingTop + paddingBottom || 22,
+  }
+}
+
+function updateSubcategoryPosition(): void {
+  if (!subcategoryOpen.value) return
+  const parentName = subcategoryParentName.value
+  const grid = categoryGridRef.value
+  if (!parentName || !grid) return
+
+  const tile = categoryTileFor(parentName)
+  const tileRect = tile?.getBoundingClientRect()
+  if (!tileRect || (tileRect.width === 0 && tileRect.height === 0)) return
+
+  const viewport = subcategoryViewport()
+  const viewportWidth =
+    viewport.width > 0 ? viewport.width : window.innerWidth
+  const viewportHeight =
+    viewport.height > 0 ? viewport.height : window.innerHeight
+  if (viewportWidth <= 0 || viewportHeight <= 0) return
+
+  const minLeft = viewport.left + SUBCATEGORY_PANEL_GUTTER
+  const maxLeft = viewport.left + viewportWidth - SUBCATEGORY_PANEL_GUTTER
+  const availableWidth = Math.max(0, maxLeft - minLeft)
+  const gridRect = grid.getBoundingClientRect()
+  const referenceWidth = gridRect.width > 0 ? gridRect.width : availableWidth
+  const width = Math.min(
+    SUBCATEGORY_PANEL_MAX_WIDTH,
+    referenceWidth,
+    availableWidth,
+  )
+  if (width <= 0) return
+
+  const tileCenter = tileRect.left + tileRect.width / 2
+  const left = Math.min(
+    Math.max(tileCenter - width / 2, minLeft),
+    Math.max(minLeft, maxLeft - width),
+  )
+  const arrowLeft = Math.min(Math.max(tileCenter - left, 18), width - 18)
+
+  const { headerHeight, bodyHeight, paddingY } =
+    readSubcategoryPanelMetrics()
+  const naturalBodyHeight = bodyHeight + paddingY
+  const naturalHeight = headerHeight + naturalBodyHeight
+  const topLimit = viewport.top + SUBCATEGORY_PANEL_GUTTER
+  const bottomLimit =
+    viewport.top + viewportHeight - SUBCATEGORY_PANEL_GUTTER
+  const spaceBelow =
+    bottomLimit - (tileRect.bottom + SUBCATEGORY_PANEL_GAP)
+  const spaceAbove = tileRect.top - SUBCATEGORY_PANEL_GAP - topLimit
+  // Prefer opening below; flip above only when the panel does not fit and
+  // there is more room upwards.
+  const placement: SubcategoryPlacement =
+    spaceBelow >= naturalHeight || spaceBelow >= spaceAbove
+      ? 'below'
+      : 'above'
+  const space = Math.max(0, placement === 'below' ? spaceBelow : spaceAbove)
+  const maxTotalHeight = Math.max(
+    headerHeight + SUBCATEGORY_PANEL_MIN_BODY,
+    bottomLimit - topLimit,
+  )
+  const bodyMaxHeight = Math.max(
+    SUBCATEGORY_PANEL_MIN_BODY,
+    Math.min(naturalBodyHeight, Math.min(space, maxTotalHeight) - headerHeight),
+  )
+  const renderedHeight =
+    headerHeight + Math.min(naturalBodyHeight, bodyMaxHeight)
+  const desiredTop =
+    placement === 'below'
+      ? tileRect.bottom + SUBCATEGORY_PANEL_GAP
+      : tileRect.top - SUBCATEGORY_PANEL_GAP - renderedHeight
+  const top = Math.min(
+    Math.max(desiredTop, topLimit),
+    Math.max(topLimit, bottomLimit - renderedHeight),
+  )
+
+  const next: SubcategoryPosition = {
+    top,
+    left,
+    width,
+    arrowLeft,
+    placement,
+    bodyMaxHeight: Math.min(naturalBodyHeight, bodyMaxHeight),
+  }
+  const current = subcategoryPosition.value
+  if (
+    current &&
+    Math.abs(current.top - next.top) < 0.5 &&
+    Math.abs(current.left - next.left) < 0.5 &&
+    Math.abs(current.width - next.width) < 0.5 &&
+    Math.abs(current.arrowLeft - next.arrowLeft) < 0.5 &&
+    Math.abs(current.bodyMaxHeight - next.bodyMaxHeight) < 0.5 &&
+    current.placement === next.placement
+  ) {
+    return
+  }
+  subcategoryPosition.value = next
+}
+
+let subcategoryTracking = false
+let subcategoryUpdateFrame: number | null = null
+let subcategoryUpdateUsesRaf = false
+let subcategoryResizeObserver: ResizeObserver | null = null
+
+function scheduleSubcategoryPositionUpdate(): void {
+  if (!subcategoryOpen.value || subcategoryUpdateFrame !== null) return
+  if (typeof window.requestAnimationFrame === 'function') {
+    subcategoryUpdateUsesRaf = true
+    subcategoryUpdateFrame = window.requestAnimationFrame(() => {
+      subcategoryUpdateFrame = null
+      updateSubcategoryPosition()
+    })
+    return
+  }
+  subcategoryUpdateUsesRaf = false
+  subcategoryUpdateFrame = window.setTimeout(() => {
+    subcategoryUpdateFrame = null
+    updateSubcategoryPosition()
+  }, 16)
+}
+
+function cancelSubcategoryPositionUpdate(): void {
+  if (subcategoryUpdateFrame === null) return
+  if (subcategoryUpdateUsesRaf) {
+    window.cancelAnimationFrame(subcategoryUpdateFrame)
+  } else {
+    window.clearTimeout(subcategoryUpdateFrame)
+  }
+  subcategoryUpdateFrame = null
+}
+
+function observeSubcategoryTargets(): void {
+  if (!subcategoryResizeObserver) return
+  subcategoryResizeObserver.disconnect()
+  if (categoryGridRef.value) {
+    subcategoryResizeObserver.observe(categoryGridRef.value)
+  }
+  if (subcategoryPanelRef.value) {
+    subcategoryResizeObserver.observe(subcategoryPanelRef.value)
+  }
+}
+
+function startSubcategoryTracking(): void {
+  if (subcategoryTracking) return
+  subcategoryTracking = true
+  window.addEventListener('resize', scheduleSubcategoryPositionUpdate)
+  // Capture scrolls from the outer dialog body (scroll events do not bubble).
+  document.addEventListener('scroll', scheduleSubcategoryPositionUpdate, true)
+  window.visualViewport?.addEventListener(
+    'resize',
+    scheduleSubcategoryPositionUpdate,
+  )
+  window.visualViewport?.addEventListener(
+    'scroll',
+    scheduleSubcategoryPositionUpdate,
+  )
+  if (typeof ResizeObserver !== 'undefined') {
+    subcategoryResizeObserver = new ResizeObserver(() => {
+      scheduleSubcategoryPositionUpdate()
+    })
+    observeSubcategoryTargets()
+  }
+  updateSubcategoryPosition()
+  void nextTick(() => {
+    observeSubcategoryTargets()
+    updateSubcategoryPosition()
+  })
+}
+
+function stopSubcategoryTracking(): void {
+  if (subcategoryTracking) {
+    subcategoryTracking = false
+    window.removeEventListener('resize', scheduleSubcategoryPositionUpdate)
+    document.removeEventListener(
+      'scroll',
+      scheduleSubcategoryPositionUpdate,
+      true,
+    )
+    window.visualViewport?.removeEventListener(
+      'resize',
+      scheduleSubcategoryPositionUpdate,
+    )
+    window.visualViewport?.removeEventListener(
+      'scroll',
+      scheduleSubcategoryPositionUpdate,
+    )
+    subcategoryResizeObserver?.disconnect()
+    subcategoryResizeObserver = null
+  }
+  cancelSubcategoryPositionUpdate()
+}
+
+function closeSubcategory(restoreFocus = false): void {
+  if (!subcategoryOpen.value) return
+  subcategoryOpen.value = false
+  restoreSubcategoryFocus.value = restoreFocus
+}
+
+function openSubcategory(entry: CategoryEntry): void {
+  if (inputDisabled.value) return
+  lastSubcategoryParentName.value = entry.name
+  subcategoryParentName.value = entry.name
+  restoreSubcategoryFocus.value = false
+  subcategoryPosition.value = null
+  subcategoryOpen.value = true
+  errorMessage.value = ''
+}
+
+function handleSubcategoryOpened(): void {
+  updateSubcategoryPosition()
+  void nextTick(() => {
+    subcategoryBackRef.value?.focus()
+    updateSubcategoryPosition()
+  })
+}
+
+function handleSubcategoryClosed(): void {
+  const parentName = lastSubcategoryParentName.value
+  subcategoryOpen.value = false
+  subcategoryParentName.value = null
+  subcategoryPosition.value = null
+  if (restoreSubcategoryFocus.value && parentName) {
+    focusCategoryTile(parentName)
+  }
+  restoreSubcategoryFocus.value = false
+}
+
+function handleCategoryTileClick(entry: CategoryEntry): void {
+  if (inputDisabled.value) return
+  if (visibleChildrenOf(entry).length > 0) {
+    openSubcategory(entry)
+    return
+  }
+  closeSubcategory()
+  selectCategory(entry.name)
+}
+
+function selectFromSubcategory(category: string): void {
+  if (inputDisabled.value) return
+  selectCategory(category)
+  closeSubcategory(true)
+}
+
 function selectCategory(category: string): void {
   form.category = category
   errorMessage.value = ''
@@ -440,19 +998,60 @@ function selectCategory(category: string): void {
 
 function openCategorySettings(): void {
   if (saving.value || form.kind === 'transfer') return
+  closeSubcategory()
   categorySettingsOpen.value = true
 }
 
 function handleCategorySaved(selectedCategory?: string): void {
   if (form.kind === 'transfer') return
-  const options = visibleCategorySuggestions(form.kind)
-  if (selectedCategory && options.includes(selectedCategory)) {
-    form.category = selectedCategory
-  } else if (!options.includes(form.category.trim())) {
-    form.category = options[0] ?? ''
+  closeSubcategory()
+  categorySettingsOpen.value = false
+  const entries = readCategoryEntries(form.kind)
+
+  if (selectedCategory) {
+    const addedEntry = findCategoryEntry(entries, selectedCategory)
+    if (addedEntry && isCategoryVisible(addedEntry, entries)) {
+      form.category = addedEntry.name
+      errorMessage.value = ''
+      formRef.value?.clearValidate('category')
+      return
+    }
+  }
+
+  const currentEntry = findCategoryEntry(entries, form.category)
+  if (currentEntry) {
+    if (isCategoryVisible(currentEntry, entries)) {
+      // Recover a renamed selection through its previous/default names.
+      form.category = currentEntry.name
+    } else if (!isEditing.value) {
+      form.category = defaultCategory(form.kind)
+    }
+  } else if (!isEditing.value) {
+    form.category = defaultCategory(form.kind)
   }
   errorMessage.value = ''
   formRef.value?.clearValidate('category')
+}
+
+interface ViewBillsPayload {
+  kind: CategoryKind
+  categories: string[]
+}
+
+function handleViewBills(payload: ViewBillsPayload): void {
+  if (!payload || !Array.isArray(payload.categories)) return
+  const categories = payload.categories
+    .map((category) => String(category).trim())
+    .filter(Boolean)
+  if (categories.length === 0) return
+  categorySettingsOpen.value = false
+  closeSubcategory()
+  closeDialog(true)
+  emit('view-bills', { kind: payload.kind, categories })
+  void router.push({
+    path: '/transactions',
+    query: { kind: payload.kind, category: categories },
+  })
 }
 
 function handleAmountInput(event: Event): void {
@@ -593,6 +1192,15 @@ async function submit(mode: 'save' | 'again' = 'save'): Promise<void> {
           : null,
     }
 
+    // POST always attributes the selected member; PATCH only sends a changed
+    // owner so historical values (including deleted members) stay untouched.
+    if (
+      form.owner !== undefined &&
+      (!props.transaction || form.owner !== props.transaction.owner)
+    ) {
+      payload.owner = Number(form.owner)
+    }
+
     if (props.transaction) {
       await updateTransaction(props.transaction.id, payload)
     } else {
@@ -636,6 +1244,7 @@ watch(
       resetForm()
     } else {
       categorySettingsOpen.value = false
+      closeSubcategory()
     }
   },
   { immediate: true },
@@ -658,6 +1267,41 @@ watch(
     scrollSelectedWalletIntoView()
   },
 )
+
+watch(
+  () => form.account,
+  () => closeSubcategory(),
+)
+
+watch(
+  [() => authState.user?.id, () => authState.household?.id],
+  () => closeSubcategory(),
+)
+
+watch(categoryEntries, (entries) => {
+  const parentName = subcategoryParentName.value
+  if (!parentName) return
+  const parent = entries.find(
+    (entry) => !entry.parentName && entry.name === parentName,
+  )
+  if (!parent || !isCategoryVisible(parent, entries)) closeSubcategory()
+})
+
+watch(subcategoryOpen, (open) => {
+  if (open) startSubcategoryTracking()
+  else stopSubcategoryTracking()
+})
+
+watch(subcategoryPanelRef, (panel) => {
+  if (!panel || !subcategoryOpen.value) return
+  observeSubcategoryTargets()
+  scheduleSubcategoryPositionUpdate()
+})
+
+onBeforeUnmount(() => {
+  stopSubcategoryTracking()
+  subcategoryPosition.value = null
+})
 </script>
 
 <template>
@@ -668,7 +1312,12 @@ watch(
     :fullscreen="isMobile"
     class="ledger-dialog quick-entry-dialog"
     :close-on-click-modal="false"
-    :close-on-press-escape="!saving && !categorySettingsOpen"
+    :close-on-press-escape="
+      !saving &&
+      !categorySettingsOpen &&
+      !subcategoryOpen &&
+      !subcategoryParent
+    "
     :show-close="false"
   >
     <template #header>
@@ -844,33 +1493,79 @@ watch(
       <div class="entry-main">
         <template v-if="form.kind !== 'transfer'">
           <el-form-item prop="category" class="category-item">
-            <div class="category-grid" role="group" aria-label="收支分类">
-              <button
-                v-for="option in categoryDisplay"
-                :key="option"
-                type="button"
-                class="category-tile"
-                :class="{ 'is-selected': form.category === option }"
-                :aria-pressed="form.category === option"
-                :disabled="inputDisabled"
-                @click="selectCategory(option)"
+            <div class="category-picker">
+              <div
+                ref="categoryGridRef"
+                class="category-grid"
+                role="group"
+                aria-label="收支分类"
               >
-                <el-icon>
-                  <component :is="iconForCategory(option)" />
-                </el-icon>
-                <span>{{ option }}</span>
-              </button>
-              <button
-                type="button"
-                class="category-tile category-tile--manage"
-                aria-label="分类管理"
-                title="分类管理"
-                :disabled="inputDisabled"
-                @click="openCategorySettings"
+                <button
+                  v-for="option in topLevelCategories"
+                  :key="option.name"
+                  type="button"
+                  class="category-tile"
+                  :class="{ 'is-selected': selectedTopName === option.name }"
+                  :aria-pressed="selectedTopName === option.name"
+                  :aria-label="categoryTileLabel(option)"
+                  :aria-expanded="
+                    visibleChildrenOf(option).length > 0
+                      ? subcategoryParentName === option.name
+                      : undefined
+                  "
+                  :aria-haspopup="
+                    visibleChildrenOf(option).length > 0 ? 'true' : undefined
+                  "
+                  :disabled="inputDisabled"
+                  :data-category-name="option.name"
+                  :title="
+                    selectedChildLabelFor(option)
+                      ? `${option.name} / ${selectedChildLabelFor(option)}`
+                      : option.name
+                  "
+                  @click="handleCategoryTileClick(option)"
+                >
+                  <el-icon>
+                    <component :is="iconForCategory(option.name)" />
+                  </el-icon>
+                  <span class="category-tile__name">{{ option.name }}</span>
+                  <span
+                    v-if="selectedChildLabelFor(option)"
+                    class="category-tile__sub"
+                    :title="selectedChildLabelFor(option)"
+                  >{{ selectedChildLabelFor(option) }}</span>
+                  <span
+                    v-else-if="
+                      selectedTopName === option.name &&
+                      visibleChildrenOf(option).length > 0
+                    "
+                    class="category-tile__sub"
+                  >本级</span>
+                  <span
+                    v-else-if="visibleChildrenOf(option).length > 0"
+                    class="category-tile__sub category-tile__sub--count"
+                  >{{ visibleChildrenOf(option).length }} 个子类</span>
+                </button>
+                <button
+                  type="button"
+                  class="category-tile category-tile--manage"
+                  aria-label="分类管理"
+                  title="分类管理"
+                  :disabled="inputDisabled"
+                  @click="openCategorySettings"
+                >
+                  <el-icon><Setting /></el-icon>
+                  <span>自定义</span>
+                </button>
+              </div>
+
+              <p
+                v-if="categorySelectionNotice"
+                class="category-selection-note"
+                role="status"
               >
-                <el-icon><Setting /></el-icon>
-                <span>自定义</span>
-              </button>
+                {{ categorySelectionNotice }}
+              </p>
             </div>
           </el-form-item>
         </template>
@@ -965,6 +1660,58 @@ watch(
               :disabled="inputDisabled"
               @keydown.enter.prevent="handleEnterSubmit"
             />
+
+            <el-dropdown
+              trigger="click"
+              placement="bottom-end"
+              :disabled="ownerSelectionDisabled"
+              popper-class="owner-menu"
+              @command="handleOwnerCommand"
+            >
+              <button
+                type="button"
+                class="dock-owner"
+                :aria-label="ownerTriggerLabel"
+                :title="ownerTriggerLabel"
+                :disabled="ownerSelectionDisabled"
+              >
+                <UserAvatar
+                  v-if="selectedOwner.user"
+                  :user="selectedOwner.user"
+                  :size="30"
+                />
+                <span v-else class="dock-owner__fallback" aria-hidden="true">
+                  {{ selectedOwner.initial }}
+                </span>
+              </button>
+
+              <template #dropdown>
+                <el-dropdown-menu
+                  class="owner-menu__list quick-form"
+                  :class="`quick-form--${form.kind}`"
+                  aria-label="选择记账归属"
+                >
+                  <el-dropdown-item
+                    v-for="option in ownerOptions"
+                    :key="option.id"
+                    class="owner-option"
+                    :class="{ 'is-selected': form.owner === option.id }"
+                    :command="option.id"
+                    :aria-current="form.owner === option.id ? 'true' : undefined"
+                  >
+                    <UserAvatar :user="option.user" :size="24" />
+                    <span class="owner-option__name">{{ option.name }}</span>
+                    <el-icon
+                      v-if="form.owner === option.id"
+                      class="owner-option__check"
+                      :size="13"
+                    >
+                      <Check />
+                    </el-icon>
+                  </el-dropdown-item>
+                </el-dropdown-menu>
+              </template>
+            </el-dropdown>
           </div>
 
           <div class="dock-meta">
@@ -1089,12 +1836,130 @@ watch(
       />
     </template>
 
+    <el-dialog
+      v-model="subcategoryDialogVisible"
+      :title="subcategoryParent ? `${subcategoryParent.name}子分类` : '子分类'"
+      class="ledger-dialog subcategory-dialog"
+      :class="{
+        'subcategory-dialog--below':
+          subcategoryPosition?.placement === 'below',
+        'subcategory-dialog--above':
+          subcategoryPosition?.placement === 'above',
+      }"
+      :style="subcategoryDialogStyle"
+      :data-subcategory-placement="subcategoryPosition?.placement"
+      modal-class="subcategory-overlay"
+      append-to-body
+      modal
+      lock-scroll
+      trap-focus
+      :close-on-click-modal="!saving"
+      :close-on-press-escape="!saving"
+      :show-close="false"
+      destroy-on-close
+      @opened="handleSubcategoryOpened"
+      @closed="handleSubcategoryClosed"
+    >
+      <template #header>
+        <div
+          v-if="subcategoryParent"
+          class="subcategory-header quick-form"
+          :class="`quick-form--${form.kind}`"
+        >
+          <button
+            ref="subcategoryBackRef"
+            type="button"
+            class="subcategory-header__button subcategory-back"
+            aria-label="返回分类列表"
+            title="返回分类列表"
+            :disabled="saving"
+            @click="closeSubcategory(true)"
+          >
+            <el-icon><Back /></el-icon>
+            <span>返回</span>
+          </button>
+          <span class="subcategory-title">
+            <el-icon :size="16">
+              <component :is="iconForCategory(subcategoryParent.name)" />
+            </el-icon>
+            <span>{{ subcategoryParent.name }}</span>
+          </span>
+          <button
+            type="button"
+            class="subcategory-header__button subcategory-close"
+            aria-label="关闭子分类选择"
+            title="关闭子分类选择"
+            :disabled="saving"
+            @click="closeSubcategory(true)"
+          >
+            <el-icon><Close /></el-icon>
+          </button>
+        </div>
+      </template>
+
+      <div
+        v-if="subcategoryParent"
+        ref="subcategoryPanelRef"
+        class="subcategory-panel quick-form"
+        :class="`quick-form--${form.kind}`"
+        role="group"
+        :aria-label="`${subcategoryParent.name}的子分类`"
+      >
+        <div
+          class="category-grid category-grid--sub"
+          role="group"
+          aria-label="选择子分类"
+        >
+          <button
+            type="button"
+            class="category-tile category-tile--parent"
+            :class="{
+              'is-selected': isSubcategoryParentSelected(subcategoryParent),
+            }"
+            :aria-pressed="isSubcategoryParentSelected(subcategoryParent)"
+            :aria-label="`记为「${subcategoryParent.name}」本身，不细分子分类`"
+            :disabled="inputDisabled"
+            @click="selectFromSubcategory(subcategoryParent.name)"
+          >
+            <el-icon>
+              <component :is="iconForCategory(subcategoryParent.name)" />
+            </el-icon>
+            <span class="category-tile__name">
+              {{ subcategoryParent.name }}
+            </span>
+            <span class="category-tile__sub">不细分</span>
+          </button>
+          <button
+            v-for="child in subcategoryChildren"
+            :key="child.name"
+            type="button"
+            class="category-tile"
+            :class="{ 'is-selected': isSubcategoryChildSelected(child) }"
+            :aria-pressed="isSubcategoryChildSelected(child)"
+            :disabled="inputDisabled"
+            @click="selectFromSubcategory(child.name)"
+          >
+            <el-icon>
+              <component :is="iconForCategory(child.name)" />
+            </el-icon>
+            <span class="category-tile__name">{{ child.name }}</span>
+          </button>
+        </div>
+        <p
+          v-if="subcategoryChildren.length === 0"
+          class="subcategory-empty"
+        >
+          该一级分类暂无可用子类，可直接记为「{{ subcategoryParent.name }}」。
+        </p>
+      </div>
+    </el-dialog>
+
     <CategorySettingsDialog
       v-if="form.kind !== 'transfer'"
       v-model="categorySettingsOpen"
       :kind="categorySettingsKind"
-      :current-category="categorySettingsCurrent"
       @saved="handleCategorySaved"
+      @view-bills="handleViewBills"
     />
   </el-dialog>
 </template>
@@ -1492,6 +2357,53 @@ watch(
   margin-left: auto;
 }
 
+/* Owner avatar menu: current user first, selected row checked. */
+.owner-menu__list.el-dropdown-menu {
+  min-width: 12rem;
+  max-width: min(18rem, calc(100vw - 24px));
+  max-height: min(22rem, 60vh);
+  padding: 6px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.owner-menu__list :deep(.owner-option) {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  min-height: 38px;
+  padding: 5px 9px;
+  color: var(--hb-ink);
+  font-size: 12px;
+  line-height: 1.2;
+  border-radius: 9px;
+}
+
+.owner-menu__list :deep(.owner-option:hover),
+.owner-menu__list :deep(.owner-option:focus) {
+  color: var(--hb-ink);
+  background: var(--hb-bg);
+}
+
+.owner-menu__list :deep(.owner-option.is-selected) {
+  color: var(--kind-accent);
+  font-weight: 600;
+  background: var(--kind-accent-soft);
+}
+
+.owner-option__name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.owner-option__check {
+  flex: 0 0 auto;
+  color: var(--kind-accent);
+}
+
 /* Middle: category grid or transfer accounts */
 .entry-main {
   min-height: 180px;
@@ -1505,11 +2417,22 @@ watch(
   display: block;
 }
 
+.category-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
 .category-grid {
   display: grid;
   grid-template-columns: repeat(6, minmax(0, 1fr));
   gap: 8px;
   width: 100%;
+}
+
+.category-grid.category-grid--sub {
+  grid-template-columns: repeat(auto-fill, minmax(72px, 1fr));
+  gap: 7px;
 }
 
 .category-tile {
@@ -1570,6 +2493,228 @@ watch(
   color: var(--hb-ink-faint);
   background: transparent;
   border: 1px dashed var(--hb-line-strong);
+}
+
+.category-tile__sub {
+  font-size: 10px;
+  font-weight: 500;
+  line-height: 1.15;
+  color: var(--hb-ink-faint);
+}
+
+.category-tile.is-selected .category-tile__sub {
+  color: var(--kind-accent);
+  opacity: 0.88;
+}
+
+.category-tile__sub--count {
+  opacity: 0.8;
+}
+
+.category-tile--parent {
+  border-style: dashed;
+  border-color: var(--hb-line-strong);
+}
+
+.category-tile--parent.is-selected {
+  border-style: solid;
+  border-color: var(--kind-accent);
+}
+
+.subcategory-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.subcategory-panel .category-tile {
+  min-height: 60px;
+  padding: 7px 4px;
+  background: var(--hb-surface-raised);
+  border-radius: 14px;
+}
+
+.subcategory-panel .category-tile.is-selected {
+  background: var(--kind-accent-soft);
+  border-color: var(--kind-accent);
+}
+
+.subcategory-panel .category-tile .el-icon {
+  font-size: 22px;
+}
+
+.subcategory-panel .category-tile__name {
+  width: 100%;
+  text-align: center;
+}
+
+.subcategory-header {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+  min-height: 30px;
+}
+
+.subcategory-header__button {
+  display: inline-flex;
+  flex: 0 0 auto;
+  gap: 3px;
+  align-items: center;
+  justify-content: center;
+  min-height: 30px;
+  padding: 4px 7px;
+  color: var(--hb-ink-soft);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  appearance: none;
+}
+
+.subcategory-header__button:hover:not(:disabled) {
+  color: var(--hb-ink);
+  background: var(--hb-bg);
+  border-color: var(--hb-line-strong);
+}
+
+.subcategory-header__button:focus-visible {
+  outline: 2px solid var(--kind-accent);
+  outline-offset: 1px;
+}
+
+.subcategory-header__button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.subcategory-close {
+  margin-left: auto;
+}
+
+.subcategory-close .el-icon {
+  font-size: 15px;
+}
+
+.subcategory-title {
+  display: flex;
+  flex: 1 1 auto;
+  gap: 5px;
+  align-items: center;
+  min-width: 0;
+  color: var(--hb-ink);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.subcategory-title .el-icon {
+  flex: 0 0 auto;
+}
+
+.subcategory-title span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.subcategory-empty,
+.category-selection-note {
+  margin: 0 2px;
+  color: var(--hb-ink-faint);
+  font-size: 11.5px;
+  line-height: 1.4;
+}
+
+/*
+ * Anchored subcategory popover. Element Plus renders the nested dialog in a
+ * body-level overlay, so these rules must be global and are scoped by the
+ * dedicated classes only.
+ */
+:global(.subcategory-overlay .el-overlay-dialog) {
+  /* The default enter/leave animation translates this wrapper, which would
+     break fixed positioning relative to the category tile. */
+  animation: none !important;
+}
+
+:global(.el-dialog.ledger-dialog.subcategory-dialog) {
+  --sc-dialog-body-max: min(56vh, 420px);
+  position: fixed;
+  inset: auto;
+  top: var(--sc-dialog-top, 12vh);
+  left: var(--sc-dialog-left, max(12px, calc(50% - 220px)));
+  width: var(--sc-dialog-width, min(440px, calc(100vw - 24px)));
+  max-width: calc(100vw - 24px);
+  max-height: calc(100dvh - 24px);
+  margin: 0;
+  padding: 0;
+  overflow: visible;
+  background: var(--hb-surface);
+  border: 1px solid var(--hb-line);
+  border-radius: 20px;
+  box-shadow: var(--hb-shadow-lg);
+  --el-dialog-border-radius: 20px;
+  --el-dialog-bg-color: var(--hb-surface);
+}
+
+:global(.el-dialog.ledger-dialog.subcategory-dialog .el-dialog__header) {
+  padding: 9px 12px 6px;
+  margin: 0;
+  border-bottom: 1px solid var(--hb-line);
+  cursor: default;
+}
+
+:global(.el-dialog.ledger-dialog.subcategory-dialog .el-dialog__body) {
+  box-sizing: border-box;
+  max-height: var(--sc-dialog-body-max, min(56vh, 420px));
+  padding: 10px 12px 12px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+
+:global(.el-dialog.subcategory-dialog--below::before),
+:global(.el-dialog.subcategory-dialog--below::after),
+:global(.el-dialog.subcategory-dialog--above::before),
+:global(.el-dialog.subcategory-dialog--above::after) {
+  position: absolute;
+  width: 0;
+  height: 0;
+  pointer-events: none;
+  content: '';
+}
+
+:global(.el-dialog.subcategory-dialog--below::before) {
+  top: -10px;
+  left: calc(var(--sc-dialog-arrow, 50%) - 10px);
+  border-right: 10px solid transparent;
+  border-bottom: 10px solid var(--hb-line);
+  border-left: 10px solid transparent;
+}
+
+:global(.el-dialog.subcategory-dialog--below::after) {
+  top: -9px;
+  left: calc(var(--sc-dialog-arrow, 50%) - 9px);
+  border-right: 9px solid transparent;
+  border-bottom: 10px solid var(--hb-surface);
+  border-left: 9px solid transparent;
+}
+
+:global(.el-dialog.subcategory-dialog--above::before) {
+  bottom: -10px;
+  left: calc(var(--sc-dialog-arrow, 50%) - 10px);
+  border-top: 10px solid var(--hb-line);
+  border-right: 10px solid transparent;
+  border-left: 10px solid transparent;
+}
+
+:global(.el-dialog.subcategory-dialog--above::after) {
+  bottom: -9px;
+  left: calc(var(--sc-dialog-arrow, 50%) - 9px);
+  border-top: 10px solid var(--hb-surface);
+  border-right: 9px solid transparent;
+  border-left: 9px solid transparent;
 }
 
 .transfer-panel {
@@ -1655,8 +2800,65 @@ watch(
 }
 
 .dock-note {
+  display: flex;
+  gap: 8px;
+  align-items: center;
   width: 100%;
   min-width: 0;
+}
+
+.dock-note__input {
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+.dock-note :deep(.el-dropdown) {
+  flex: 0 0 auto;
+}
+
+.dock-owner {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  cursor: pointer;
+  background: transparent;
+  border: 0;
+  border-radius: 50%;
+  appearance: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.dock-owner:hover:not(:disabled) {
+  box-shadow: 0 0 0 2px var(--kind-accent-soft);
+}
+
+.dock-owner:focus-visible {
+  outline: 2px solid var(--kind-accent);
+  outline-offset: 1px;
+}
+
+.dock-owner:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+/* Deleted members have no avatar data; show the stored name initial instead. */
+.dock-owner__fallback {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  color: var(--hb-teal-dark);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1;
+  background: var(--hb-teal-soft);
+  border: 1px solid #d2e8e2;
+  border-radius: 50%;
+  user-select: none;
 }
 
 .dock-note :deep(.el-input__wrapper) {
@@ -2038,6 +3240,10 @@ watch(
   .category-grid {
     grid-template-columns: repeat(5, minmax(0, 1fr));
     gap: 6px;
+  }
+
+  .category-grid.category-grid--sub {
+    grid-template-columns: repeat(auto-fill, minmax(58px, 1fr));
   }
 
   .category-tile {

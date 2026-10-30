@@ -14,11 +14,13 @@ const transactionSelect = `
 	SELECT t.id, t.account_id, a.name, t.kind, t.amount_cents,
 	       t.category, t.tx_date, t.note,
 	       t.transfer_account_id, COALESCE(ta.name, ''),
-	       t.created_by, COALESCE(NULLIF(u.nickname, ''), u.username)
+	       t.created_by, COALESCE(NULLIF(u.nickname, ''), u.username),
+	       t.owner_user_id, COALESCE(NULLIF(o.nickname, ''), o.username, '')
 	FROM transactions t
 	JOIN accounts a ON a.id = t.account_id
 	LEFT JOIN accounts ta ON ta.id = t.transfer_account_id
-	JOIN users u ON u.id = t.created_by`
+	JOIN users u ON u.id = t.created_by
+	LEFT JOIN users o ON o.id = t.owner_user_id`
 
 func (s *Store) ListTransactions(ctx context.Context, householdID int64, filters TransactionFilters) ([]Transaction, error) {
 	query := transactionSelect + " WHERE t.household_id = $1"
@@ -53,6 +55,9 @@ func (s *Store) ListTransactions(ctx context.Context, householdID int64, filters
 				" OR strpos(lower(t.note), lower(%s)) > 0"+
 				" OR strpos(lower(COALESCE(ta.name, '')), lower(%s)) > 0)",
 			categoryParam, noteParam, transferNameParam)
+	}
+	if len(filters.Categories) > 0 {
+		query += " AND t.category = ANY(" + addArgument(filters.Categories) + "::text[])"
 	}
 
 	query += " ORDER BY t.tx_date DESC, t.id DESC"
@@ -103,6 +108,14 @@ func (s *Store) CreateTransaction(ctx context.Context, householdID, userID int64
 		return Transaction{}, err
 	}
 
+	ownerID := userID
+	if input.OwnerID != nil {
+		ownerID = *input.OwnerID
+	}
+	if _, err := lockActiveTransactionOwner(ctx, tx, householdID, ownerID); err != nil {
+		return Transaction{}, err
+	}
+
 	if input.Kind == "transfer" {
 		if transferAccountID == nil || *transferAccountID <= 0 ||
 			*transferAccountID == input.AccountID {
@@ -116,11 +129,11 @@ func (s *Store) CreateTransaction(ctx context.Context, householdID, userID int64
 	var transactionID int64
 	err = tx.QueryRow(ctx, `
 		INSERT INTO transactions
-			(household_id, account_id, kind, amount_cents, category, tx_date, note, created_by, transfer_account_id)
-		VALUES ($1, $2, $3, $4, $5, $6::timestamp, $7, $8, $9)
+			(household_id, account_id, kind, amount_cents, category, tx_date, note, created_by, owner_user_id, transfer_account_id)
+		VALUES ($1, $2, $3, $4, $5, $6::timestamp, $7, $8, $9, $10)
 		RETURNING id`,
 		householdID, input.AccountID, input.Kind, input.AmountCents,
-		input.Category, input.Date, input.Note, userID, transferAccountID).Scan(&transactionID)
+		input.Category, input.Date, input.Note, userID, ownerID, transferAccountID).Scan(&transactionID)
 	if err != nil {
 		return Transaction{}, fmt.Errorf("创建交易失败: %w", err)
 	}
@@ -170,6 +183,14 @@ func (s *Store) UpdateTransaction(ctx context.Context, householdID, transactionI
 		next.TransferAccountID = patch.TransferAccountID
 		next.TransferAccountName = ""
 	}
+	// Resending the current owner must remain possible after that member was
+	// soft-deleted, so only a changed assignment is validated below.
+	ownerChanged := false
+	if patch.OwnerID != nil && *patch.OwnerID != current.OwnerID {
+		next.OwnerID = *patch.OwnerID
+		next.OwnerName = ""
+		ownerChanged = true
+	}
 	if next.Kind == "transfer" {
 		if next.TransferAccountID == nil || *next.TransferAccountID <= 0 ||
 			*next.TransferAccountID == next.AccountID {
@@ -204,6 +225,14 @@ func (s *Store) UpdateTransaction(ctx context.Context, householdID, transactionI
 	if err != nil {
 		return Transaction{}, err
 	}
+	if ownerChanged {
+		ownerName, err := lockActiveTransactionOwner(
+			ctx, tx, householdID, next.OwnerID)
+		if err != nil {
+			return Transaction{}, err
+		}
+		next.OwnerName = ownerName
+	}
 
 	if patch.AccountID != nil {
 		var accountName string
@@ -235,12 +264,13 @@ func (s *Store) UpdateTransaction(ctx context.Context, householdID, transactionI
 		    category = $6,
 		    tx_date = $7::timestamp,
 		    note = $8,
-		    transfer_account_id = $9,
+		    owner_user_id = $9,
+		    transfer_account_id = $10,
 		    updated_at = now()
 		WHERE id = $1 AND household_id = $2`,
 		transactionID, householdID, next.AccountID, next.Kind,
 		next.AmountCents, next.Category, next.Date, next.Note,
-		next.TransferAccountID)
+		next.OwnerID, next.TransferAccountID)
 	if err != nil {
 		return Transaction{}, fmt.Errorf("更新交易失败: %w", err)
 	}
@@ -321,6 +351,32 @@ func lockAccounts(
 	return 0, nil
 }
 
+// lockActiveTransactionOwner resolves the display name of any active member of
+// the household, including the administrator, while holding a shared lock on
+// the row. Transactions are attributed to a member rather than to a wallet, so
+// unlike account ownership the administrator is eligible. Soft deletion takes
+// an exclusive lock, so a concurrent deletion can never leave a new
+// attribution pointing at a member that was already gone.
+func lockActiveTransactionOwner(
+	ctx context.Context,
+	q dbQuerier,
+	householdID, ownerID int64,
+) (string, error) {
+	var name string
+	err := q.QueryRow(ctx, `
+		SELECT COALESCE(NULLIF(nickname, ''), username)
+		FROM users
+		WHERE id = $1 AND household_id = $2 AND deleted_at IS NULL
+		FOR SHARE`, ownerID, householdID).Scan(&name)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", ErrInvalidOwner
+	}
+	if err != nil {
+		return "", fmt.Errorf("校验交易归属成员失败: %w", err)
+	}
+	return name, nil
+}
+
 // resolveTransferAccountName returns the destination name after validating
 // that it differs from the source and belongs to the same household. The
 // caller holds the destination row lock, so the read cannot race a rename.
@@ -371,7 +427,8 @@ func scanTransaction(row rowScanner) (Transaction, error) {
 		&transaction.Kind, &transaction.AmountCents, &transaction.Category,
 		&transactionDate, &transaction.Note,
 		&transaction.TransferAccountID, &transaction.TransferAccountName,
-		&transaction.CreatedBy, &transaction.CreatedByName)
+		&transaction.CreatedBy, &transaction.CreatedByName,
+		&transaction.OwnerID, &transaction.OwnerName)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return Transaction{}, err

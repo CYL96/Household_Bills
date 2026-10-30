@@ -446,8 +446,8 @@ func TestAccountBalancePatchWaitsForCommittedLedgerMutation(t *testing.T) {
 	}
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO transactions
-			(household_id, account_id, kind, amount_cents, category, tx_date, note, created_by)
-		VALUES ($1, $2, 'income', 1000, '工资', DATE '2026-10-01', '', $3)`,
+			(household_id, account_id, kind, amount_cents, category, tx_date, note, created_by, owner_user_id)
+		VALUES ($1, $2, 'income', 1000, '工资', DATE '2026-10-01', '', $3, $3)`,
 		householdID, walletID, userID); err != nil {
 		t.Fatalf("写入并发收入失败: %v", err)
 	}

@@ -23,6 +23,7 @@ Chinese-language household ledger: an environment-bootstrapped `admin` creates m
 | `frontend/src/views/`, `components/` | Route pages and reusable mutation dialogs |
 | `frontend/src/stores/`, `router/`, `utils/` | Shared reactive state, access guards, date/money formatting |
 | `test/` | Manual build/run helper, not an automated test suite |
+| `docs/changes/` | Per-task and per-requirement change records; naming and content conventions in `docs/changes/README.md` |
 
 ## Development Commands
 
@@ -51,6 +52,14 @@ There is no configured lint command. Format Go with `gofmt`; frontend `build` ru
 - **Schema changes:** add a new numbered migration such as `backend/internal/store/migrations/0004_description.sql`; do not rewrite applied migrations. Startup serializes migration/bootstrap work with advisory locks. Keep handler validation and database constraints aligned.
 - **Frontend style:** `<script setup lang="ts">`, PascalCase component names, `*View.vue` route pages, camelCase functions, snake_case API fields, single-quoted TypeScript with no semicolons, scoped styles and `--hb-*` CSS tokens. Follow nearby formatting; there is no formatter config.
 - **Frontend behavior:** call `markDataChanged()` after account/transaction mutations; retain stale-response guards in loaders. Shared `ApiError` handling lives in `api/client.ts`; add field labels there when introducing validation fields. A shared `401` handler clears auth state; do not treat CSRF `403` as logout or retry it automatically.
+
+## Documentation Maintenance
+
+- **MUST** store task-specific changes, requirement details, implementation decisions, and verification records in `docs/changes/`, not append them to the root `README.md` or a single growing changelog.
+- **MUST** use one Markdown file per task or requirement, named `YYYY-MM-DD-topic.md` (creation date plus a concise lowercase, hyphen-separated topic). Update the existing file for follow-up work on the same task; create a separate file for an independent requirement.
+- Write records in Chinese. Include background/goals, actual changes, verification performed and results, and compatibility or migration notes when applicable. Explicitly identify checks not run; never present planned work as completed or include secrets.
+- Keep the root `README.md` focused on the project overview, setup, configuration, operations, and essential usage. Update it only when those instructions actually change; keep a stable link to `docs/changes/README.md` instead of adding an entry for every task.
+- Keep this file focused on durable repository rules, not task history. Follow `docs/changes/README.md` for record organization; do not duplicate full records across documents.
 
 ## Important Files
 

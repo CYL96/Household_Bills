@@ -69,6 +69,10 @@ export interface Transaction {
    */
   date: string
   note: string
+  /** Attribution owner: the household member this record belongs to. */
+  owner: number
+  owner_name: string
+  /** Immutable recorder derived from the authenticated session. */
   created_by: number
   created_by_name: string
   /** Destination account for transfers; always null for income/expense. */
@@ -86,6 +90,11 @@ export interface TransactionPayload {
   note?: string
   /** Destination account for transfers; send null to clear it. */
   transfer_account?: number | null
+  /**
+   * Attribution owner. When omitted on create it defaults to the
+   * authenticated user; when omitted on update it preserves the current owner.
+   */
+  owner?: number
 }
 
 export interface TransactionFilters {
@@ -93,6 +102,7 @@ export interface TransactionFilters {
   account?: number
   kind?: TransactionKind
   q?: string
+  category?: string[]
 }
 
 export interface SummaryCategory {

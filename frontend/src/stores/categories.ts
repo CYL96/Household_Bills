@@ -9,6 +9,11 @@ export type CategoryKind = 'expense' | 'income'
 export interface CategoryEntry {
   name: string
   visible: boolean
+  /**
+   * Name of the top-level entry this entry belongs to.
+   * Omitted for top-level entries; a tree is never deeper than two levels.
+   */
+  parentName?: string
   /** Explicit icon choice; omitted entries keep the built-in name mapping. */
   icon?: CategoryIconId
   /**
@@ -20,13 +25,25 @@ export interface CategoryEntry {
   previousNames?: string[]
 }
 
-interface StoredCategoryPreferences {
-  version: 1
+interface ParsedCategoryPreferences {
   entries: CategoryEntry[]
+  /** Built-in defaults the user deleted for good; they must never come back. */
+  deletedDefaults: string[]
 }
 
+/** Current saved shape: hierarchical entries plus permanent deletions. */
+interface StoredCategoryPreferencesV2 {
+  version: 2
+  entries: CategoryEntry[]
+  deletedDefaults: string[]
+}
+
+/**
+ * The `.v1` suffix is historical: the shape moved on to version 2 but the key
+ * stays put so saved preferences (order, icons, renames) survive the upgrade.
+ */
 const STORAGE_KEY_PREFIX = 'household-bills.categories.v1'
-const STORAGE_VERSION = 1
+const STORAGE_VERSION = 2
 const MAX_CATEGORY_LENGTH = 64
 
 /** Bumped after every successful save so computed consumers re-read storage. */
@@ -57,6 +74,7 @@ function parsePreviousNames(value: unknown, name: string): string[] | undefined 
 
 function copyCategoryEntry(entry: CategoryEntry): CategoryEntry {
   const copy: CategoryEntry = { name: entry.name, visible: entry.visible }
+  if (entry.parentName !== undefined) copy.parentName = entry.parentName
   if (entry.icon !== undefined) copy.icon = entry.icon
   if (entry.defaultName !== undefined) copy.defaultName = entry.defaultName
   if (entry.previousNames !== undefined) {
@@ -114,28 +132,21 @@ function getStorage(): Storage | null {
   }
 }
 
-function parseStoredEntries(
-  raw: string,
+/**
+ * Parses one saved entry list. Version 1 lists are flat by definition, so any
+ * stray `parentName` is ignored there; version 2 keeps well-formed references
+ * and repairs the rest later.
+ */
+function parseStoredEntryList(
+  rawEntries: unknown[],
   defaults: readonly string[],
+  allowParents: boolean,
 ): CategoryEntry[] | null {
-  let parsed: unknown
-  try {
-    parsed = JSON.parse(raw)
-  } catch {
-    return null
-  }
-  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
-    return null
-  }
-  const envelope = parsed as Record<string, unknown>
-  if (envelope.version !== STORAGE_VERSION) return null
-  if (!Array.isArray(envelope.entries) || envelope.entries.length === 0) return null
-
   const defaultNames = new Set(defaults)
   const declaredDefaults = new Set<string>()
   const entries: CategoryEntry[] = []
   const seen = new Set<string>()
-  for (const rawEntry of envelope.entries) {
+  for (const rawEntry of rawEntries) {
     if (
       typeof rawEntry !== 'object' ||
       rawEntry === null ||
@@ -166,10 +177,87 @@ function parseStoredEntries(
         declaredDefaults.add(defaultName)
       }
     }
+    // A broken parent reference is dropped below; the entry becomes top level.
+    if (allowParents && typeof candidate.parentName === 'string') {
+      const parentName = normalizeCategoryName(candidate.parentName)
+      if (parentName && parentName !== name) entry.parentName = parentName
+    }
     entries.push(entry)
   }
-  if (!entries.some((entry) => entry.visible)) return null
   return entries
+}
+
+/**
+ * Conservative hierarchy repair for stored data: a reference to a missing
+ * entry, to itself, or to an entry that has its own parent would create a
+ * third level, so that reference is dropped and the entry stays top level.
+ */
+function repairCategoryHierarchy(entries: CategoryEntry[]): void {
+  const byName = new Map(entries.map((entry) => [entry.name, entry] as const))
+  for (const entry of entries) {
+    const parentName = entry.parentName
+    if (parentName === undefined) continue
+    const parent = byName.get(parentName)
+    if (!parent || parent.parentName !== undefined) {
+      delete entry.parentName
+    }
+  }
+}
+
+function parseDeletedDefaults(
+  value: unknown,
+  defaults: readonly string[],
+): string[] {
+  if (!Array.isArray(value)) return []
+  const defaultNames = new Set(defaults)
+  const deleted: string[] = []
+  const seen = new Set<string>()
+  for (const item of value) {
+    if (typeof item !== 'string') continue
+    const name = normalizeCategoryName(item)
+    if (!name || !defaultNames.has(name) || seen.has(name)) continue
+    seen.add(name)
+    deleted.push(name)
+  }
+  return deleted
+}
+
+function parseStoredPreferences(
+  raw: string,
+  defaults: readonly string[],
+): ParsedCategoryPreferences | null {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw)
+  } catch {
+    return null
+  }
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    return null
+  }
+  const envelope = parsed as Record<string, unknown>
+  if (!Array.isArray(envelope.entries) || envelope.entries.length === 0) return null
+
+  let entries: CategoryEntry[] | null
+  let deletedDefaults: string[] = []
+  if (envelope.version === 1) {
+    // Version 1 knew no hierarchy, so every saved entry is a top-level one.
+    entries = parseStoredEntryList(envelope.entries, defaults, false)
+  } else if (envelope.version === 2) {
+    entries = parseStoredEntryList(envelope.entries, defaults, true)
+    if (entries) {
+      repairCategoryHierarchy(entries)
+      deletedDefaults = parseDeletedDefaults(envelope.deletedDefaults, defaults)
+    }
+  } else {
+    return null
+  }
+  if (!entries) return null
+  // The tree always keeps at least one usable top-level category.
+  if (!entries.some((entry) => entry.parentName === undefined && entry.visible)) {
+    return null
+  }
+  return { entries, deletedDefaults }
 }
 
 /**
@@ -177,26 +265,29 @@ function parseStoredEntries(
  * Missing built-in categories are appended so new defaults are introduced
  * without resetting any saved order or visibility choices. Renamed defaults
  * keep their source marker, so their old default names are not appended again.
+ * Defaults the user deleted permanently stay deleted.
  */
 function loadEntries(kind: CategoryKind): CategoryEntry[] {
   const defaults = kind === 'income' ? INCOME_CATEGORIES : EXPENSE_CATEGORIES
-  let entries: CategoryEntry[] | null = null
+  let preferences: ParsedCategoryPreferences | null = null
   const key = storageKey(kind)
   const storage = key ? getStorage() : null
   if (key && storage) {
     try {
       const raw = storage.getItem(key)
-      if (raw !== null) entries = parseStoredEntries(raw, defaults)
+      if (raw !== null) preferences = parseStoredPreferences(raw, defaults)
     } catch {
-      entries = null
+      preferences = null
     }
   }
 
   const source: CategoryEntry[] =
-    entries ?? defaults.map((name) => ({ name, visible: true }))
+    preferences?.entries ?? defaults.map((name) => ({ name, visible: true }))
+  const deletedDefaults = new Set(preferences?.deletedDefaults ?? [])
   const result = source.map(copyCategoryEntry)
   inferDefaultNames(result, defaults)
   for (const name of defaults) {
+    if (deletedDefaults.has(name)) continue
     // A renamed default still declares its source; a custom entry sharing a
     // default name must not be duplicated either.
     const represented = result.some(
@@ -208,22 +299,77 @@ function loadEntries(kind: CategoryKind): CategoryEntry[] {
   return result
 }
 
-export function readCategoryEntries(
-  kind: CategoryKind,
-  currentCategory?: string,
-): CategoryEntry[] {
+/** Saved categories for the active account; nothing is synthesized. */
+export function readCategoryEntries(kind: CategoryKind): CategoryEntry[] {
   // Register the reactive dependency so settings changes refresh open drafts.
   void categoryRevision.value
-  const entries = loadEntries(kind)
-  if (typeof currentCategory === 'string') {
-    const current = normalizeCategoryName(currentCategory)
-    if (current && !entries.some((entry) => entryMatchesName(entry, current))) {
-      entries.push({ name: current, visible: true })
-    }
-  }
-  return entries
+  return loadEntries(kind)
 }
 
+/**
+ * Effective visibility: an entry shows up only when it is enabled itself and
+ * every ancestor is enabled too. Disabling a top-level category hides its
+ * whole subtree while the children keep their own `visible` flags.
+ * Dangling parent references behave as top level; reference cycles never show.
+ */
+export function isCategoryVisible(
+  entry: CategoryEntry,
+  entries: readonly CategoryEntry[],
+): boolean {
+  if (!entry.visible) return false
+  const seen = new Set<string>([entry.name])
+  let parentName = entry.parentName
+  while (parentName !== undefined) {
+    const parent = entries.find((candidate) => candidate.name === parentName)
+    if (!parent) return true
+    if (!parent.visible) return false
+    if (seen.has(parent.name)) return false
+    seen.add(parent.name)
+    parentName = parent.parentName
+  }
+  return true
+}
+
+/**
+ * Names that may appear on saved transactions for a category and its children:
+ * the current names plus historical/default aliases, deduplicated. Only the
+ * two supported levels are walked, and disabled entries stay included because
+ * their historical bills still exist.
+ */
+export function categoryBillNames(
+  entries: readonly CategoryEntry[],
+  name: string,
+): string[] {
+  const current = normalizeCategoryName(name)
+  if (!current) return []
+  const entry =
+    entries.find((candidate) => candidate.name === current) ??
+    entries.find((candidate) => entryMatchesName(candidate, current))
+  if (!entry) return [current]
+
+  const names: string[] = []
+  const seen = new Set<string>()
+  const add = (value: string | undefined): void => {
+    if (value === undefined || seen.has(value)) return
+    seen.add(value)
+    names.push(value)
+  }
+  add(entry.name)
+  for (const previous of entry.previousNames ?? []) add(previous)
+  add(entry.defaultName)
+  for (const child of entries) {
+    if (child.parentName !== entry.name) continue
+    add(child.name)
+    for (const previous of child.previousNames ?? []) add(previous)
+    add(child.defaultName)
+  }
+  return names
+}
+
+/**
+ * Flat names for legacy consumers that only understand a single list.
+ * Every effectively visible entry (both levels) appears once, in saved order.
+ */
 export function visibleCategorySuggestions(kind: TransactionKind): string[] {
   if (kind === 'transfer') return []
   // Reading auth state and the revision keeps computed callers up to date.
@@ -233,8 +379,9 @@ export function visibleCategorySuggestions(kind: TransactionKind): string[] {
   if (userId === undefined || householdId === undefined) {
     return [...(kind === 'income' ? INCOME_CATEGORIES : EXPENSE_CATEGORIES)]
   }
-  return readCategoryEntries(kind)
-    .filter((entry) => entry.visible)
+  const entries = readCategoryEntries(kind)
+  return entries
+    .filter((entry) => isCategoryVisible(entry, entries))
     .map((entry) => entry.name)
 }
 
@@ -271,6 +418,17 @@ export function saveCategoryEntries(
       throw new Error(`分类「${name}」重复，请调整后重试`)
     }
     seen.add(name)
+    let parentName: string | undefined
+    if (candidate.parentName !== undefined) {
+      const normalizedParent =
+        typeof candidate.parentName === 'string'
+          ? normalizeCategoryName(candidate.parentName)
+          : null
+      if (!normalizedParent) {
+        throw new Error(`分类「${name}」的上级分类无效，请重新选择`)
+      }
+      parentName = normalizedParent
+    }
     let icon: CategoryIconId | undefined
     if (candidate.icon !== undefined) {
       if (!isCategoryIconId(candidate.icon)) {
@@ -316,23 +474,55 @@ export function saveCategoryEntries(
       if (previousNames.length === 0) previousNames = undefined
     }
     const normalizedEntry: CategoryEntry = { name, visible: candidate.visible }
+    if (parentName !== undefined) normalizedEntry.parentName = parentName
     if (icon !== undefined) normalizedEntry.icon = icon
     if (defaultName !== undefined) normalizedEntry.defaultName = defaultName
     if (previousNames !== undefined) normalizedEntry.previousNames = previousNames
     normalized.push(normalizedEntry)
   }
-  if (!normalized.some((entry) => entry.visible)) {
-    throw new Error('请至少保留一个显示的分类')
+
+  // Hierarchy is validated only after every name is known, so entry order in
+  // the incoming draft cannot hide a broken parent reference.
+  const byName = new Map(normalized.map((entry) => [entry.name, entry] as const))
+  for (const entry of normalized) {
+    const parentName = entry.parentName
+    if (parentName === undefined) continue
+    if (parentName === entry.name) {
+      throw new Error(`分类「${entry.name}」不能以自身作为上级分类`)
+    }
+    const parent = byName.get(parentName)
+    if (!parent) {
+      throw new Error(
+        `分类「${entry.name}」的上级分类「${parentName}」不存在，请重新选择`,
+      )
+    }
+    if (parent.parentName !== undefined) {
+      throw new Error(
+        `分类「${entry.name}」不能放在二级分类「${parentName}」下，最多支持两级分类`,
+      )
+    }
   }
+  if (!normalized.some((entry) => entry.parentName === undefined && entry.visible)) {
+    throw new Error('请至少保留一个显示的一级分类')
+  }
+
+  // A known default that no entry represents was deleted on purpose.
+  const deletedDefaults = defaults.filter(
+    (name) =>
+      !normalized.some(
+        (entry) => entry.defaultName === name || entry.name === name,
+      ),
+  )
 
   const storage = getStorage()
   if (!storage) {
     throw new Error('无法使用本机存储，请检查浏览器设置后重试')
   }
 
-  const payload: StoredCategoryPreferences = {
+  const payload: StoredCategoryPreferencesV2 = {
     version: STORAGE_VERSION,
     entries: normalized,
+    deletedDefaults,
   }
   try {
     storage.setItem(key, JSON.stringify(payload))
