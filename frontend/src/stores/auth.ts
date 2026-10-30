@@ -1,4 +1,4 @@
-import { reactive } from 'vue'
+import { computed, reactive } from 'vue'
 import {
   getMe,
   login as loginRequest,
@@ -26,6 +26,11 @@ export const authState = reactive<AuthState>({
   bootError: null,
 })
 
+/** 成员名单与人数不包含系统管理员；账户归属选项同样只使用该名单。 */
+export const familyMembers = computed(() =>
+  authState.members.filter((member) => !member.is_admin),
+)
+
 function applyMe(me: MeResponse): void {
   authState.user = me.user
   authState.household = me.user ? (me.household ?? null) : null
@@ -36,6 +41,10 @@ function clearAuth(): void {
   authState.user = null
   authState.household = null
   authState.members = []
+}
+
+export function clearAuthState(): void {
+  clearAuth()
 }
 
 setUnauthorizedHandler(clearAuth)
@@ -60,6 +69,18 @@ export async function loginUser(payload: LoginPayload): Promise<void> {
 export function addAuthMember(member: User): void {
   if (authState.members.some((existing) => existing.id === member.id)) return
   authState.members = [...authState.members, member]
+}
+
+/** 同步更新当前登录用户与成员名单中的对应条目。 */
+export function updateAuthUser(updated: User): void {
+  if (authState.user?.id === updated.id) authState.user = updated
+  authState.members = authState.members.map((member) =>
+    member.id === updated.id ? updated : member,
+  )
+}
+
+export function removeAuthMember(id: number): void {
+  authState.members = authState.members.filter((member) => member.id !== id)
 }
 
 export async function refreshAuth(): Promise<void> {

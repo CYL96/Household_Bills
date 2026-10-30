@@ -2,15 +2,19 @@
 import { computed, ref, watch } from 'vue'
 import { RouterView, useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { ArrowDown, Menu, SwitchButton } from '@element-plus/icons-vue'
+import { ArrowDown, Menu, Setting, SwitchButton } from '@element-plus/icons-vue'
 import AppNav from '../components/AppNav.vue'
 import { getErrorMessage } from '../api/client'
+import UserAvatar from '../components/UserAvatar.vue'
+import UserProfileDialog from '../components/UserProfileDialog.vue'
 import { authState, logoutUser } from '../stores/auth'
+import { displayName } from '../utils/user'
 
 const route = useRoute()
 const router = useRouter()
 
 const navOpen = ref(false)
+const profileOpen = ref(false)
 const loggingOut = ref(false)
 
 const pageTitle = computed(() =>
@@ -19,10 +23,9 @@ const pageTitle = computed(() =>
 
 const householdName = computed(() => authState.household?.name ?? '我的家庭')
 
-const initial = computed(() => {
-  const username = authState.user?.username ?? ''
-  return [...username][0]?.toUpperCase() ?? '家'
-})
+const userDisplayName = computed(() =>
+  authState.user ? displayName(authState.user) : '',
+)
 
 watch(
   () => route.fullPath,
@@ -52,7 +55,13 @@ async function handleLogout(): Promise<void> {
   }
 }
 
+function openProfile(): void {
+  navOpen.value = false
+  profileOpen.value = true
+}
+
 function handleUserCommand(command: string | number | object): void {
+  if (command === 'profile') openProfile()
   if (command === 'logout') void handleLogout()
 }
 </script>
@@ -81,10 +90,19 @@ function handleUserCommand(command: string | number | object): void {
 
         <div class="topbar__user">
           <el-dropdown trigger="click" @command="handleUserCommand">
-            <button type="button" class="user-chip" aria-label="账户菜单">
-              <span class="user-chip__avatar" aria-hidden="true">{{ initial }}</span>
+            <button
+              type="button"
+              class="user-chip"
+              aria-label="账户菜单：个人设置与退出登录"
+              data-testid="profile-settings-trigger"
+            >
+              <UserAvatar
+                v-if="authState.user"
+                :user="authState.user"
+                :size="34"
+              />
               <span class="user-chip__copy">
-                <strong>{{ authState.user?.username }}</strong>
+                <strong>{{ userDisplayName }}</strong>
                 <small>{{ householdName }}</small>
               </span>
               <el-icon class="user-chip__arrow" :size="14">
@@ -95,6 +113,13 @@ function handleUserCommand(command: string | number | object): void {
               <el-dropdown-menu>
                 <el-dropdown-item disabled>
                   家庭：{{ householdName }}
+                </el-dropdown-item>
+                <el-dropdown-item
+                  command="profile"
+                  :icon="Setting"
+                  data-testid="profile-settings-menu-item"
+                >
+                  个人设置
                 </el-dropdown-item>
                 <el-dropdown-item command="logout" divided :icon="SwitchButton">
                   退出登录
@@ -121,21 +146,43 @@ function handleUserCommand(command: string | number | object): void {
         <AppNav @navigate="navOpen = false" />
       </div>
       <div class="drawer-account">
-        <span class="drawer-account__avatar" aria-hidden="true">{{ initial }}</span>
-        <div class="drawer-account__copy">
-          <strong>{{ authState.user?.username }}</strong>
-          <small>{{ householdName }}</small>
+        <div class="drawer-account__identity">
+          <UserAvatar
+            v-if="authState.user"
+            :user="authState.user"
+            :size="34"
+          />
+          <div class="drawer-account__copy">
+            <strong>{{ userDisplayName }}</strong>
+            <small>{{ householdName }}</small>
+          </div>
         </div>
-        <el-button
-          text
-          :icon="SwitchButton"
-          :loading="loggingOut"
-          @click="handleLogout"
-        >
-          退出
-        </el-button>
+        <div class="drawer-account__actions">
+          <el-button
+            text
+            :icon="Setting"
+            data-testid="profile-settings-button"
+            @click="openProfile"
+          >
+            个人设置
+          </el-button>
+          <el-button
+            text
+            :icon="SwitchButton"
+            :loading="loggingOut"
+            @click="handleLogout"
+          >
+            退出登录
+          </el-button>
+        </div>
       </div>
     </el-drawer>
+
+    <UserProfileDialog
+      v-if="authState.user"
+      v-model="profileOpen"
+      :user="authState.user"
+    />
   </div>
 </template>
 
@@ -245,21 +292,6 @@ function handleUserCommand(command: string | number | object): void {
   border-color: var(--hb-line);
 }
 
-.user-chip__avatar,
-.drawer-account__avatar {
-  display: grid;
-  flex: 0 0 auto;
-  width: 34px;
-  height: 34px;
-  place-items: center;
-  color: var(--hb-teal-dark);
-  background: var(--hb-teal-soft);
-  border: 1px solid #d2e8e2;
-  border-radius: 50%;
-  font-size: 14px;
-  font-weight: 600;
-}
-
 .user-chip__copy {
   display: flex;
   flex-direction: column;
@@ -307,11 +339,24 @@ function handleUserCommand(command: string | number | object): void {
 
 .drawer-account {
   display: flex;
-  align-items: center;
+  flex-direction: column;
   gap: 10px;
   margin-top: 14px;
   padding: 16px 6px 0;
   border-top: 1px solid var(--hb-line);
+}
+
+.drawer-account__identity {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.drawer-account__actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 4px;
 }
 
 .drawer-account__copy {
@@ -393,11 +438,6 @@ function handleUserCommand(command: string | number | object): void {
   .user-chip__copy,
   .user-chip__arrow {
     display: none;
-  }
-
-  .user-chip__avatar {
-    width: 32px;
-    height: 32px;
   }
 
   .page-content {

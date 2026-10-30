@@ -52,7 +52,7 @@ func (s *Store) EnsureAdmin(ctx context.Context, password string) (BootstrapResu
 	err = tx.QueryRow(ctx, `
 		SELECT id, password_hash
 		FROM users
-		WHERE is_admin
+		WHERE is_admin AND deleted_at IS NULL
 		ORDER BY id
 		LIMIT 1
 		FOR UPDATE`).Scan(&adminID, &passwordHash)
@@ -146,13 +146,13 @@ func (s *Store) EnsureAdmin(ctx context.Context, password string) (BootstrapResu
 	return BootstrapResult{Created: true}, nil
 }
 
-// ListUsers returns every account in one household, including the
+// ListUsers returns every active account in one household, including the
 // administrator. Callers pass the household from the authenticated session.
 func (s *Store) ListUsers(ctx context.Context, householdID int64) ([]UserRef, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT id, username, is_admin
+		SELECT id, username, nickname, is_admin, avatar_version
 		FROM users
-		WHERE household_id = $1
+		WHERE household_id = $1 AND deleted_at IS NULL
 		ORDER BY id`, householdID)
 	if err != nil {
 		return nil, fmt.Errorf("读取用户列表失败: %w", err)
@@ -162,7 +162,9 @@ func (s *Store) ListUsers(ctx context.Context, householdID int64) ([]UserRef, er
 	users := make([]UserRef, 0)
 	for rows.Next() {
 		var user UserRef
-		if err := rows.Scan(&user.ID, &user.Username, &user.IsAdmin); err != nil {
+		if err := rows.Scan(
+			&user.ID, &user.Username, &user.Nickname, &user.IsAdmin,
+			&user.AvatarVersion); err != nil {
 			return nil, fmt.Errorf("读取用户列表失败: %w", err)
 		}
 		users = append(users, user)
@@ -179,15 +181,16 @@ func (s *Store) CreateUser(
 	ctx context.Context,
 	householdID int64,
 	username string,
+	nickname string,
 	passwordHash string,
 ) (UserRef, error) {
 	var user UserRef
 	err := s.pool.QueryRow(ctx, `
-		INSERT INTO users (username, password_hash, household_id, is_admin)
-		VALUES ($1, $2, $3, false)
-		RETURNING id, username, is_admin`,
-		username, passwordHash, householdID).
-		Scan(&user.ID, &user.Username, &user.IsAdmin)
+		INSERT INTO users (username, nickname, password_hash, household_id, is_admin)
+		VALUES ($1, $2, $3, $4, false)
+		RETURNING id, username, nickname, is_admin, avatar_version`,
+		username, nickname, passwordHash, householdID).
+		Scan(&user.ID, &user.Username, &user.Nickname, &user.IsAdmin, &user.AvatarVersion)
 	if isUniqueViolation(err, "users_username_key") {
 		return UserRef{}, ErrUsernameTaken
 	}

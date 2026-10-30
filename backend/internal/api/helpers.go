@@ -72,6 +72,24 @@ func parseMoneyRaw(raw json.RawMessage) (int64, error) {
 	return money.Parse(string(trimmed))
 }
 
+// parseOwnerRaw distinguishes an omitted owner field from an explicit JSON
+// null. Null clears the owner, a positive integer assigns one, and every other
+// shape (zero, negative, fractional, string, boolean, object) is invalid.
+func parseOwnerRaw(raw json.RawMessage) (id *int64, set bool, ok bool) {
+	if raw == nil {
+		return nil, false, true
+	}
+	trimmed := bytes.TrimSpace(raw)
+	if bytes.Equal(trimmed, []byte("null")) {
+		return nil, true, true
+	}
+	value, err := strconv.ParseInt(string(trimmed), 10, 64)
+	if err != nil || value <= 0 {
+		return nil, true, false
+	}
+	return &value, true, true
+}
+
 func moneyErrorMessage(err error) string {
 	switch {
 	case errors.Is(err, errMissingMoney):
@@ -156,6 +174,8 @@ func accountResponse(account store.Account) gin.H {
 		"name":            account.Name,
 		"opening_balance": money.Format(account.OpeningBalanceCents),
 		"balance":         money.Format(account.BalanceCents),
+		"owner":           account.OwnerID,
+		"owner_name":      account.OwnerName,
 	}
 }
 

@@ -7,3 +7,4 @@ backend/household-bills
 backend/server
 *.log
 .DS_Store
+/test/

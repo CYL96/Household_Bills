@@ -3,10 +3,13 @@ import { computed, nextTick, reactive, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, type FormInstance, type FormRules } from 'element-plus'
 import {
+  ArrowDown,
   Back,
+  Check,
   Loading,
   Setting,
   Switch as SwitchIcon,
+  Wallet,
   WarningFilled,
 } from '@element-plus/icons-vue'
 import { getErrorMessage } from '../api/client'
@@ -18,13 +21,15 @@ import type {
   TransactionPayload,
 } from '../api/types'
 import { useMediaQuery } from '../composables/useMediaQuery'
+import { authState } from '../stores/auth'
 import {
   readCategoryEntries,
   visibleCategorySuggestions,
+  type CategoryEntry,
   type CategoryKind,
 } from '../stores/categories'
 import { markDataChanged } from '../stores/data'
-import { categoryIcon } from '../utils/categoryIcons'
+import { categoryIcon, type CategoryIconId } from '../utils/categoryIcons'
 import { decimalString, nowLocalDateTime } from '../utils/format'
 import CategorySettingsDialog from './CategorySettingsDialog.vue'
 
@@ -43,6 +48,7 @@ const emit = defineEmits<{
 const router = useRouter()
 const isMobile = useMediaQuery('(max-width: 760px)')
 const amountDockRef = ref<HTMLElement | null>(null)
+const walletStripRef = ref<HTMLElement | null>(null)
 
 const TRANSFER_CATEGORY = '账户转账'
 const MAX_INTEGER_DIGITS = 10
@@ -102,6 +108,29 @@ const historicalCategory = computed(() => {
 })
 
 /**
+ * Stored entries for the current kind, read once per category revision.
+ * Tile order and icons both derive from this snapshot so no tile touches
+ * localStorage by itself.
+ */
+const categoryEntries = computed<CategoryEntry[]>(() => {
+  if (form.kind === 'transfer') return []
+  return readCategoryEntries(form.kind)
+})
+
+/** Category name -> explicit icon id; unset entries keep the name mapping. */
+const categoryIconIds = computed(() => {
+  const icons = new Map<string, CategoryIconId>()
+  for (const entry of categoryEntries.value) {
+    if (entry.icon) icons.set(entry.name, entry.icon)
+  }
+  return icons
+})
+
+function iconForCategory(name: string) {
+  return categoryIcon(name, categoryIconIds.value.get(name))
+}
+
+/**
  * Visible category names in configured order. While editing a historical
  * transaction whose category was never configured, keep it available so it
  * stays visible and manageable. Hidden categories are part of the stored
@@ -109,12 +138,13 @@ const historicalCategory = computed(() => {
  */
 const categoryDisplay = computed<string[]>(() => {
   if (form.kind === 'transfer') return []
-  const options = visibleCategorySuggestions(form.kind)
+  const entries = categoryEntries.value
+  const options = entries
+    .filter((entry) => entry.visible)
+    .map((entry) => entry.name)
   const historical = historicalCategory.value
   if (!historical || options.includes(historical)) return options
-  const configured = readCategoryEntries(form.kind).some(
-    (entry) => entry.name === historical,
-  )
+  const configured = entries.some((entry) => entry.name === historical)
   return configured ? options : [...options, historical]
 })
 
@@ -138,18 +168,44 @@ const saveDisabled = computed(
 
 const inputDisabled = computed(() => saving.value || props.accounts.length === 0)
 
-const dateDisplayFormat = computed(() =>
-  isMobile.value ? 'MM-DD HH:mm:ss' : 'YYYY-MM-DD HH:mm:ss',
-)
+interface WalletGroup {
+  key: 'personal' | 'public' | 'other'
+  label: string
+  accounts: Account[]
+}
 
-const transferSummary = computed(() => {
-  const source = props.accounts.find((account) => account.id === form.account)
-  const target = props.accounts.find(
-    (account) => account.id === form.transferAccount,
-  )
-  if (source && target) return `${source.name} → ${target.name}`
-  return '请选择转出与转入账户'
+/**
+ * Wallet picker groups: personal → public → others, keeping the incoming
+ * account order inside each group. Empty groups are dropped entirely.
+ */
+const walletGroups = computed<WalletGroup[]>(() => {
+  const currentUserId = authState.user?.id
+  const personal: Account[] = []
+  const publicAccounts: Account[] = []
+  const others: Account[] = []
+
+  for (const account of props.accounts) {
+    if (currentUserId !== undefined && account.owner === currentUserId) {
+      personal.push(account)
+    } else if (account.owner === null) {
+      publicAccounts.push(account)
+    } else {
+      others.push(account)
+    }
+  }
+
+  const groups: WalletGroup[] = [
+    { key: 'personal', label: '个人账户', accounts: personal },
+    { key: 'public', label: '公共账户', accounts: publicAccounts },
+    { key: 'other', label: '他人账户', accounts: others },
+  ]
+  return groups.filter((group) => group.accounts.length > 0)
 })
+
+/** Single source of truth for wallet ordering (chips + dropdown fallbacks). */
+const orderedAccounts = computed<Account[]>(() =>
+  walletGroups.value.flatMap((group) => group.accounts),
+)
 
 function defaultCategory(kind: TransactionKind): string {
   if (kind === 'transfer') return TRANSFER_CATEGORY
@@ -272,13 +328,14 @@ function amountFromRecord(value: string | null | undefined): string {
 }
 
 function ensureTransferAccounts(): void {
-  if (props.accounts.length === 0) return
+  const accounts = orderedAccounts.value
+  if (accounts.length === 0) return
 
   if (
     form.account === undefined ||
     !props.accounts.some((account) => account.id === form.account)
   ) {
-    form.account = props.accounts[0]?.id
+    form.account = accounts[0]?.id
   }
 
   if (form.kind !== 'transfer') return
@@ -288,7 +345,7 @@ function ensureTransferAccounts(): void {
     form.transferAccount === form.account ||
     !props.accounts.some((account) => account.id === form.transferAccount)
   if (targetMissing) {
-    form.transferAccount = props.accounts.find(
+    form.transferAccount = accounts.find(
       (account) => account.id !== form.account,
     )?.id
   }
@@ -320,11 +377,9 @@ function resetForm(): void {
       props.transaction.kind === 'transfer'
         ? props.transaction.transfer_account ?? undefined
         : undefined
-    if (form.kind === 'transfer' && form.transferAccount === undefined) {
-      ensureTransferAccounts()
-    }
+    ensureTransferAccounts()
   } else {
-    form.account = props.accounts[0]?.id
+    form.account = orderedAccounts.value[0]?.id
     if (form.kind === 'transfer') {
       form.category = TRANSFER_CATEGORY
       ensureTransferAccounts()
@@ -334,6 +389,7 @@ function resetForm(): void {
   lastKind = form.kind
   void nextTick(() => {
     formRef.value?.clearValidate()
+    scrollSelectedWalletIntoView()
   })
 }
 
@@ -436,7 +492,7 @@ function handleEnterSubmit(event: Event): void {
 
 function handleSourceAccountChange(): void {
   if (form.transferAccount !== undefined && form.account === form.transferAccount) {
-    form.transferAccount = props.accounts.find(
+    form.transferAccount = orderedAccounts.value.find(
       (account) => account.id !== form.account,
     )?.id
   }
@@ -459,6 +515,32 @@ function swapTransferAccounts(): void {
   void nextTick(() => {
     formRef.value?.clearValidate(['account', 'transferAccount'])
   })
+}
+
+function scrollSelectedWalletIntoView(): void {
+  void nextTick(() => {
+    const selected = walletStripRef.value?.querySelector<HTMLElement>(
+      '.wallet-chip[aria-pressed="true"]',
+    )
+    selected?.scrollIntoView?.({ block: 'nearest', inline: 'nearest' })
+  })
+}
+
+function handleWalletMenuVisible(visible: boolean): void {
+  if (!visible) scrollSelectedWalletIntoView()
+}
+
+function selectAccount(accountId: number): void {
+  if (inputDisabled.value || form.kind === 'transfer') return
+  if (!props.accounts.some((account) => account.id === accountId)) return
+  form.account = accountId
+  formRef.value?.clearValidate('account')
+  scrollSelectedWalletIntoView()
+}
+
+function handleAccountCommand(command: string | number | object): void {
+  if (typeof command !== 'number') return
+  selectAccount(command)
 }
 
 function createdSuccessText(): string {
@@ -559,7 +641,7 @@ watch(
 )
 
 watch(
-  () => props.accounts,
+  () => orderedAccounts.value,
   (accounts) => {
     if (!props.modelValue || accounts.length === 0) return
     if (form.kind === 'transfer') {
@@ -572,6 +654,7 @@ watch(
     ) {
       form.account = accounts[0]?.id
     }
+    scrollSelectedWalletIntoView()
   },
 )
 </script>
@@ -657,6 +740,91 @@ watch(
       :class="`quick-form--${form.kind}`"
       @submit.prevent
     >
+      <el-form-item
+        v-if="form.kind !== 'transfer'"
+        prop="account"
+        class="wallet-item"
+      >
+        <div class="wallet-bar" role="group" aria-label="资金账户">
+          <el-dropdown
+            trigger="click"
+            placement="bottom-start"
+            :disabled="inputDisabled"
+            popper-class="wallet-menu"
+            @command="handleAccountCommand"
+            @visible-change="handleWalletMenuVisible"
+          >
+            <button
+              type="button"
+              class="wallet-trigger"
+              aria-label="全部钱包"
+              :disabled="inputDisabled"
+            >
+              <el-icon :size="15"><Wallet /></el-icon>
+              <span>账户</span>
+              <el-icon class="wallet-trigger__arrow" :size="12">
+                <ArrowDown />
+              </el-icon>
+            </button>
+            <template #dropdown>
+              <el-dropdown-menu
+                class="wallet-menu quick-form"
+                :class="`quick-form--${form.kind}`"
+              >
+                <template v-for="group in walletGroups" :key="group.key">
+                  <el-dropdown-item
+                    class="wallet-menu__group"
+                    disabled
+                  >
+                    {{ group.label }}
+                  </el-dropdown-item>
+                  <el-dropdown-item
+                    v-for="account in group.accounts"
+                    :key="account.id"
+                    class="wallet-menu__item"
+                    :class="{ 'is-selected': form.account === account.id }"
+                    :command="account.id"
+                    :aria-current="form.account === account.id ? 'true' : undefined"
+                  >
+                    <span class="wallet-menu__text">
+                      <span class="wallet-menu__name">{{ account.name }}</span>
+                      <span
+                        v-if="group.key === 'other' && account.owner_name"
+                        class="wallet-menu__owner"
+                      >{{ account.owner_name }}</span>
+                    </span>
+                    <el-icon
+                      v-if="form.account === account.id"
+                      class="wallet-menu__check"
+                      :size="13"
+                    >
+                      <Check />
+                    </el-icon>
+                  </el-dropdown-item>
+                </template>
+              </el-dropdown-menu>
+            </template>
+          </el-dropdown>
+
+          <div ref="walletStripRef" class="wallet-strip">
+            <button
+              v-for="account in orderedAccounts"
+              :key="account.id"
+              type="button"
+              class="wallet-chip"
+              :class="{ 'is-selected': form.account === account.id }"
+              :aria-pressed="form.account === account.id"
+              :disabled="inputDisabled"
+              :data-account-id="account.id"
+              :title="account.name"
+              @click="selectAccount(account.id)"
+            >
+              {{ account.name }}
+            </button>
+          </div>
+        </div>
+      </el-form-item>
+
       <div class="entry-main">
         <template v-if="form.kind !== 'transfer'">
           <el-form-item prop="category" class="category-item">
@@ -672,7 +840,7 @@ watch(
                 @click="selectCategory(option)"
               >
                 <el-icon>
-                  <component :is="categoryIcon(option)" />
+                  <component :is="iconForCategory(option)" />
                 </el-icon>
                 <span>{{ option }}</span>
               </button>
@@ -772,17 +940,30 @@ watch(
 
       <Teleport :to="amountDockRef ?? 'body'" :disabled="!isMobile || !amountDockRef">
         <div class="entry-dock">
-          <div class="dock-row">
-            <div class="dock-note">
-              <el-input
-                v-model="form.note"
-                class="dock-note__input"
-                placeholder="点击输入备注"
-                aria-label="备注（选填）"
+          <div class="dock-note">
+            <el-input
+              v-model="form.note"
+              class="dock-note__input"
+              placeholder="点击输入备注"
+              aria-label="备注（选填）"
+              :disabled="inputDisabled"
+              @keydown.enter.prevent="handleEnterSubmit"
+            />
+          </div>
+
+          <div class="dock-meta">
+            <el-form-item label="记账时间" prop="date" class="dock-date">
+              <el-date-picker
+                v-model="form.date"
+                type="datetime"
+                value-format="YYYY-MM-DDTHH:mm:ss"
+                format="YYYY-MM-DD HH:mm:ss"
+                placeholder="选择记账时间"
+                :clearable="false"
                 :disabled="inputDisabled"
-                @keydown.enter.prevent="handleEnterSubmit"
+                aria-label="记账时间"
               />
-            </div>
+            </el-form-item>
 
             <el-form-item label="金额（元）" prop="amount" class="amount-item dock-amount">
               <div class="amount-display">
@@ -801,47 +982,6 @@ watch(
                   @keydown.enter.prevent="handleEnterSubmit"
                 />
               </div>
-            </el-form-item>
-          </div>
-
-          <div class="meta-bar">
-            <el-form-item
-              v-if="form.kind !== 'transfer'"
-              label="账户"
-              prop="account"
-              class="meta-bar__item meta-bar__account"
-            >
-              <el-select
-                v-model="form.account"
-                placeholder="选择账户"
-                aria-label="资金账户"
-                :disabled="inputDisabled"
-              >
-                <el-option
-                  v-for="account in accounts"
-                  :key="account.id"
-                  :label="account.name"
-                  :value="account.id"
-                />
-              </el-select>
-            </el-form-item>
-
-            <div v-else class="meta-bar__transfer" aria-label="转账账户">
-              <el-icon><SwitchIcon /></el-icon>
-              <span>{{ transferSummary }}</span>
-            </div>
-
-            <el-form-item label="记账时间" prop="date" class="meta-bar__item meta-bar__date">
-              <el-date-picker
-                v-model="form.date"
-                type="datetime"
-                value-format="YYYY-MM-DDTHH:mm:ss"
-                :format="dateDisplayFormat"
-                placeholder="选择记账时间"
-                :clearable="false"
-                :disabled="inputDisabled"
-                aria-label="记账时间"
-              />
             </el-form-item>
           </div>
 
@@ -1068,6 +1208,219 @@ watch(
   box-shadow: inset 0 0 0 1px var(--kind-accent);
 }
 
+/* Wallet strip: all-accounts dropdown + horizontally scrolling chips */
+.wallet-item :deep(.el-form-item__content) {
+  display: block;
+}
+
+.wallet-item :deep(.el-form-item__error) {
+  position: static;
+  padding-top: 3px;
+}
+
+.wallet-bar {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  min-width: 0;
+}
+
+.wallet-bar :deep(.el-dropdown) {
+  flex: 0 0 auto;
+}
+
+.wallet-trigger {
+  display: inline-flex;
+  flex: 0 0 auto;
+  gap: 4px;
+  align-items: center;
+  height: 34px;
+  padding: 0 9px;
+  color: var(--hb-ink-soft);
+  font: inherit;
+  font-size: 12px;
+  white-space: nowrap;
+  cursor: pointer;
+  background: var(--hb-bg);
+  border: 1px solid var(--hb-line);
+  border-radius: 9px;
+  appearance: none;
+  -webkit-tap-highlight-color: transparent;
+  transition:
+    color 0.16s ease,
+    background-color 0.16s ease,
+    border-color 0.16s ease;
+}
+
+.wallet-trigger:hover:not(:disabled) {
+  color: var(--kind-accent);
+  background: var(--kind-accent-soft);
+  border-color: var(--kind-accent);
+}
+
+.wallet-trigger:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.wallet-trigger:focus-visible {
+  outline: 2px solid var(--kind-accent);
+  outline-offset: 2px;
+}
+
+.wallet-trigger__arrow {
+  color: var(--hb-ink-faint);
+}
+
+.wallet-strip {
+  display: flex;
+  flex: 1 1 auto;
+  gap: 6px;
+  min-width: 0;
+  min-height: 40px;
+  padding: 2px 2px 4px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+  -webkit-overflow-scrolling: touch;
+}
+
+.wallet-strip::-webkit-scrollbar {
+  display: none;
+}
+
+.wallet-chip {
+  flex: 0 0 auto;
+  max-width: 9.5rem;
+  height: 34px;
+  padding: 0 12px;
+  overflow: hidden;
+  color: var(--hb-ink-soft);
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+  background: var(--hb-bg);
+  border: 1px solid transparent;
+  border-radius: 999px;
+  appearance: none;
+  -webkit-tap-highlight-color: transparent;
+  transition:
+    color 0.16s ease,
+    background-color 0.16s ease,
+    border-color 0.16s ease;
+}
+
+.wallet-chip:hover:not(:disabled) {
+  color: var(--hb-ink);
+  background: var(--hb-surface-raised);
+  border-color: var(--hb-line-strong);
+}
+
+.wallet-chip:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.wallet-chip:focus-visible {
+  outline: 2px solid var(--kind-accent);
+  outline-offset: -2px;
+}
+
+.wallet-chip.is-selected {
+  color: var(--kind-accent);
+  font-weight: 600;
+  background: var(--kind-accent-soft);
+  border-color: var(--kind-accent);
+}
+
+/* Account picker: grouped grid, responsive width, scrollable on small screens */
+.wallet-menu.el-dropdown-menu {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+  width: min(22rem, calc(100vw - 24px));
+  max-height: min(22rem, 60vh);
+  padding: 8px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.wallet-menu .wallet-menu__group {
+  grid-column: 1 / -1;
+  padding: 7px 4px 1px;
+  color: var(--hb-ink-faint);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.3;
+  letter-spacing: 0.02em;
+  cursor: default;
+}
+
+.wallet-menu .wallet-menu__item {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  min-width: 0;
+  min-height: 38px;
+  padding: 4px 10px;
+  color: var(--hb-ink-soft);
+  font-size: 12px;
+  line-height: 1.2;
+  white-space: normal;
+  cursor: pointer;
+  background: var(--hb-bg);
+  border: 1px solid transparent;
+  border-radius: 9px;
+}
+
+.wallet-menu .wallet-menu__item:hover:not(.is-disabled):not(.is-selected) {
+  color: var(--hb-ink);
+  background: var(--hb-surface-raised);
+  border-color: var(--hb-line-strong);
+}
+
+.wallet-menu .wallet-menu__item.is-selected {
+  color: var(--kind-accent, var(--hb-terracotta));
+  font-weight: 600;
+  background: var(--kind-accent-soft);
+  border-color: var(--kind-accent, var(--hb-terracotta));
+}
+
+.wallet-menu__text {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.wallet-menu__name {
+  display: block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wallet-menu__owner {
+  display: block;
+  overflow: hidden;
+  color: var(--hb-ink-faint);
+  font-size: 10px;
+  font-weight: 400;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wallet-menu__check {
+  flex: 0 0 auto;
+  margin-left: auto;
+}
+
 /* Middle: category grid or transfer accounts */
 .entry-main {
   min-height: 180px;
@@ -1222,7 +1575,7 @@ watch(
   font-size: 11px;
 }
 
-/* Bottom dock: note + amount / meta / keypad */
+/* Bottom dock: note / date + amount / keypad */
 .entry-dock {
   display: flex;
   flex-direction: column;
@@ -1230,14 +1583,8 @@ watch(
   width: 100%;
 }
 
-.dock-row {
-  display: flex;
-  gap: 10px;
-  align-items: flex-end;
-}
-
 .dock-note {
-  flex: 1;
+  width: 100%;
   min-width: 0;
 }
 
@@ -1263,8 +1610,9 @@ watch(
 }
 
 .amount-item.dock-amount {
-  flex: 0 1 52%;
-  width: auto;
+  flex: 0 1 148px;
+  width: 148px;
+  max-width: 44%;
   min-width: 0;
   margin: 0;
 }
@@ -1311,7 +1659,7 @@ watch(
   flex: 1;
   width: 100%;
   min-width: 0;
-  height: 48px;
+  height: 34px;
   padding: 0;
   color: var(--hb-ink);
   font-family: inherit;
@@ -1346,43 +1694,40 @@ watch(
   box-shadow: 0 1px 0 0 var(--hb-danger);
 }
 
-.meta-bar {
+.dock-meta {
   display: flex;
-  gap: 8px;
-  align-items: flex-start;
+  gap: 10px;
+  align-items: center;
+  justify-content: space-between;
   min-width: 0;
 }
 
-.meta-bar__item {
-  flex: 0 0 auto;
+.dock-meta :deep(.el-form-item) {
+  margin-bottom: 0;
+}
+
+.dock-date {
+  flex: 0 1 190px;
+  width: 190px;
   min-width: 0;
   margin: 0;
 }
 
-.meta-bar__account {
-  flex: 1 1 auto;
-}
-
-.meta-bar :deep(.el-form-item__label) {
+.dock-date :deep(.el-form-item__label) {
   display: none;
 }
 
-.meta-bar :deep(.el-form-item__content) {
+.dock-date :deep(.el-form-item__content) {
   line-height: 1.1;
 }
 
-.meta-bar :deep(.el-form-item__error) {
+.dock-date :deep(.el-form-item__error) {
   position: static;
   padding-top: 2px;
   font-size: 10px;
 }
 
-.meta-bar__account :deep(.el-select) {
-  width: 100%;
-}
-
-.meta-bar__account :deep(.el-select__wrapper),
-.meta-bar__date :deep(.el-input__wrapper) {
+.dock-date :deep(.el-input__wrapper) {
   min-height: 34px;
   font-size: 12px;
   background: var(--hb-bg);
@@ -1390,29 +1735,13 @@ watch(
   box-shadow: inset 0 0 0 1px var(--hb-line);
 }
 
-.meta-bar__date :deep(.el-date-editor.el-input) {
-  width: 156px;
-}
-
-.meta-bar__transfer {
-  display: flex;
-  flex: 1 1 auto;
-  gap: 5px;
-  align-items: center;
+.dock-date :deep(.el-date-editor.el-input) {
+  width: 100%;
   min-width: 0;
-  height: 34px;
-  padding: 0 10px;
-  color: var(--hb-ink-soft);
-  font-size: 12px;
-  background: var(--hb-bg);
-  border: 1px solid var(--hb-line);
-  border-radius: 9px;
 }
 
-.meta-bar__transfer span {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+.dock-date :deep(.el-input__inner) {
+  text-align: center;
 }
 
 .amount-keypad {
@@ -1674,20 +2003,12 @@ watch(
 }
 
 @media (max-width: 370px) {
-  .dock-row {
+  .dock-meta {
     gap: 6px;
-  }
-
-  .amount-item.dock-amount {
-    flex-basis: 50%;
   }
 
   .amount-input {
     font-size: 26px;
-  }
-
-  .meta-bar__date :deep(.el-date-editor.el-input) {
-    width: 138px;
   }
 
   .transfer-row {
@@ -1707,12 +2028,6 @@ watch(
 
   .fixed-category small {
     margin-left: 0;
-  }
-}
-
-@media (min-width: 761px) {
-  .meta-bar__date :deep(.el-date-editor.el-input) {
-    width: 190px;
   }
 }
 </style>

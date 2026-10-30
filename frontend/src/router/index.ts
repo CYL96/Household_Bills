@@ -39,16 +39,6 @@ const router = createRouter({
           component: () => import('../views/MembersView.vue'),
           meta: { title: '家庭成员', requiresAuth: true },
         },
-        {
-          path: 'users',
-          name: 'users',
-          component: () => import('../views/UsersView.vue'),
-          meta: {
-            title: '用户管理',
-            requiresAuth: true,
-            requiresAdmin: true,
-          },
-        },
       ],
     },
     {
@@ -68,9 +58,6 @@ router.beforeEach((to) => {
       name: 'login',
       query: { redirect: to.fullPath },
     }
-  }
-  if (to.meta.requiresAdmin && !authState.user?.is_admin) {
-    return { name: 'dashboard' }
   }
   if (to.name === 'login' && authState.user) {
     return { name: 'dashboard' }

@@ -20,6 +20,7 @@ const errorMessage = ref('')
 
 const form = reactive({
   username: '',
+  nickname: '',
   password: '',
 })
 
@@ -58,6 +59,27 @@ const rules: FormRules = {
       trigger: 'blur',
     },
   ],
+  nickname: [
+    {
+      validator: (_rule, value, callback) => {
+        const nickname = String(value ?? '').trim()
+        if (!nickname) {
+          callback()
+          return
+        }
+        if (nickname.includes('\u0000')) {
+          callback(new Error('显示昵称包含非法字符'))
+          return
+        }
+        if ([...nickname].length > 50) {
+          callback(new Error('显示昵称最多 50 个字符'))
+          return
+        }
+        callback()
+      },
+      trigger: 'blur',
+    },
+  ],
   password: [
     { required: true, message: '请设置密码', trigger: 'blur' },
     {
@@ -85,6 +107,7 @@ const rules: FormRules = {
 function resetForm(): void {
   errorMessage.value = ''
   form.username = ''
+  form.nickname = ''
   form.password = ''
   void nextTick(() => {
     formRef.value?.clearValidate()
@@ -118,6 +141,7 @@ async function submit(): Promise<void> {
   try {
     const payload: CreateUserPayload = {
       username: form.username.trim(),
+      nickname: form.nickname.trim(),
       password: form.password,
     }
     const createdUser = await createUser(payload)
@@ -177,6 +201,16 @@ async function submit(): Promise<void> {
         />
       </el-form-item>
 
+      <el-form-item label="显示昵称" prop="nickname">
+        <el-input
+          v-model="form.nickname"
+          size="large"
+          placeholder="留空则显示用户名"
+          autocomplete="off"
+          aria-label="显示昵称"
+        />
+      </el-form-item>
+
       <el-form-item label="初始密码" prop="password">
         <el-input
           v-model="form.password"
@@ -190,7 +224,7 @@ async function submit(): Promise<void> {
       </el-form-item>
 
       <p class="user-form__hint">
-        用户名最多 150 个字符，只能包含字母、数字和 @ . + - _。密码至少 10 个字符，且不能超过 72 个字节；创建后请通过安全方式告知成员。
+        用户名最多 150 个字符，只能包含字母、数字和 @ . + - _；显示昵称最多 50 个字符，留空时显示用户名。密码至少 10 个字符，且不能超过 72 个字节；创建后请通过安全方式告知成员。
       </p>
     </el-form>
 

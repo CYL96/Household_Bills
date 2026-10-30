@@ -3,6 +3,8 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
+  ArrowDown,
+  ArrowUp,
   Delete,
   EditPen,
   Plus,
@@ -41,6 +43,16 @@ const monthFilter = ref<string | null>(initialMonth())
 const accountFilter = ref<number | ''>('')
 const kindFilter = ref<TransactionKind | ''>('')
 const searchQuery = ref('')
+
+const filtersOpen = ref(false)
+
+const activeExtraFilterCount = computed(() => {
+  let count = 0
+  if (typeof accountFilter.value === 'number') count += 1
+  if (kindFilter.value !== '') count += 1
+  if (searchQuery.value.trim() !== '') count += 1
+  return count
+})
 
 const TRANSACTION_KINDS: readonly TransactionKind[] = [
   'expense',
@@ -296,13 +308,6 @@ onBeforeUnmount(() => {
 <template>
   <div class="transactions-page has-mobile-fab">
     <div class="page-heading">
-      <div class="page-heading__copy">
-        <p class="page-eyebrow">流水与筛选</p>
-        <h2>每一笔来去，都有迹可循</h2>
-        <p class="page-heading__subtitle">
-          按月份、账户、类型或关键词查找；记录可随时编辑与删除。
-        </p>
-      </div>
       <div class="heading-actions heading-actions--fab">
         <el-button
           type="primary"
@@ -328,9 +333,8 @@ onBeforeUnmount(() => {
     </div>
 
     <section class="surface-card filter-panel" aria-label="流水筛选">
-      <div class="filter-grid">
-        <div class="filter-field">
-          <span class="filter-label">月份</span>
+      <div class="filter-summary">
+        <div class="filter-month">
           <el-date-picker
             v-model="monthFilter"
             type="month"
@@ -342,55 +346,77 @@ onBeforeUnmount(() => {
           />
         </div>
 
-        <div class="filter-field">
-          <span class="filter-label">资金账户</span>
-          <el-select
-            v-model="accountFilter"
-            placeholder="全部账户"
-            clearable
-            :loading="accountsLoading"
-            aria-label="按资金账户筛选"
-          >
-            <el-option
-              v-for="account in accounts"
-              :key="account.id"
-              :label="account.name"
-              :value="account.id"
-            />
-          </el-select>
-        </div>
+        <el-button
+          class="filter-toggle"
+          :class="{ 'is-active': activeExtraFilterCount > 0 }"
+          :aria-expanded="filtersOpen"
+          aria-controls="transaction-filter-more"
+          @click="filtersOpen = !filtersOpen"
+        >
+          <span>筛选</span>
+          <span v-if="activeExtraFilterCount > 0" class="filter-toggle__count">
+            {{ activeExtraFilterCount }}
+          </span>
+          <el-icon aria-hidden="true">
+            <ArrowUp v-if="filtersOpen" />
+            <ArrowDown v-else />
+          </el-icon>
+        </el-button>
 
-        <div class="filter-field">
-          <span class="filter-label">类型</span>
-          <el-select
-            v-model="kindFilter"
-            placeholder="全部类型"
-            clearable
-            aria-label="按类型筛选"
-          >
-            <el-option label="收入" value="income" />
-            <el-option label="支出" value="expense" />
-            <el-option label="转账" value="transfer" />
-          </el-select>
-        </div>
-
-        <div class="filter-field">
-          <span class="filter-label">搜索</span>
-          <el-input
-            v-model="searchQuery"
-            clearable
-            :prefix-icon="Search"
-            placeholder="搜索分类或备注"
-            aria-label="搜索分类或备注"
-          />
-        </div>
+        <el-button
+          class="filter-reset"
+          :icon="RefreshLeft"
+          title="重置筛选"
+          aria-label="重置筛选"
+          @click="resetFilters"
+        />
       </div>
 
-      <div class="filter-foot">
-        <span>筛选不会改变账户总余额。</span>
-        <el-button text :icon="RefreshLeft" @click="resetFilters">
-          重置筛选
-        </el-button>
+      <div v-show="filtersOpen" id="transaction-filter-more" class="filter-more">
+        <div class="filter-grid">
+          <div class="filter-field">
+            <span class="filter-label">资金账户</span>
+            <el-select
+              v-model="accountFilter"
+              placeholder="全部账户"
+              clearable
+              :loading="accountsLoading"
+              aria-label="按资金账户筛选"
+            >
+              <el-option
+                v-for="account in accounts"
+                :key="account.id"
+                :label="account.name"
+                :value="account.id"
+              />
+            </el-select>
+          </div>
+
+          <div class="filter-field">
+            <span class="filter-label">类型</span>
+            <el-select
+              v-model="kindFilter"
+              placeholder="全部类型"
+              clearable
+              aria-label="按类型筛选"
+            >
+              <el-option label="收入" value="income" />
+              <el-option label="支出" value="expense" />
+              <el-option label="转账" value="transfer" />
+            </el-select>
+          </div>
+
+          <div class="filter-field filter-field--search">
+            <span class="filter-label">搜索</span>
+            <el-input
+              v-model="searchQuery"
+              clearable
+              :prefix-icon="Search"
+              placeholder="搜索分类或备注"
+              aria-label="搜索分类或备注"
+            />
+          </div>
+        </div>
       </div>
     </section>
 
@@ -633,6 +659,10 @@ onBeforeUnmount(() => {
   min-width: 0;
 }
 
+.page-heading {
+  justify-content: flex-end;
+}
+
 .inline-note {
   display: flex;
   align-items: center;
@@ -658,13 +688,76 @@ onBeforeUnmount(() => {
 }
 
 .filter-panel {
-  padding: 18px 20px 12px;
+  padding: 14px 16px;
   margin-bottom: 15px;
+}
+
+.filter-summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.filter-month {
+  flex: 1 1 auto;
+  min-width: 0;
+  max-width: 280px;
+}
+
+.filter-month :deep(.el-date-editor.el-input) {
+  width: 100%;
+}
+
+.filter-month :deep(.el-input__inner) {
+  min-width: 0;
+}
+
+.filter-toggle {
+  flex: 0 0 auto;
+  margin-left: auto;
+  padding: 0 12px;
+}
+
+.filter-toggle :deep(span) {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.filter-toggle.is-active {
+  color: var(--hb-teal-dark);
+  background: var(--hb-teal-faint);
+  border-color: var(--hb-teal);
+}
+
+.filter-toggle__count {
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--hb-teal);
+  color: var(--hb-surface-raised);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 18px;
+}
+
+.filter-summary .filter-reset {
+  flex: 0 0 auto;
+  width: 32px;
+  height: 32px;
+  margin-left: 0;
+  padding: 0;
+}
+
+.filter-more {
+  padding-top: 12px;
 }
 
 .filter-grid {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 13px;
 }
 
@@ -683,25 +776,8 @@ onBeforeUnmount(() => {
 }
 
 .filter-field :deep(.el-select),
-.filter-field :deep(.el-date-editor.el-input),
 .filter-field :deep(.el-input) {
   width: 100%;
-}
-
-.filter-foot {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  margin-top: 8px;
-  padding-top: 6px;
-  border-top: 1px solid var(--hb-line);
-}
-
-.filter-foot > span {
-  color: var(--hb-ink-faint);
-  font-size: 11px;
 }
 
 .ledger-panel {
@@ -982,20 +1058,26 @@ onBeforeUnmount(() => {
   padding: 12px;
 }
 
-@media (max-width: 1100px) {
-  .filter-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-}
-
 @media (max-width: 760px) {
+  .page-heading {
+    display: contents;
+  }
+
   .filter-panel {
-    padding: 16px;
+    padding: 12px;
   }
 
   .filter-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 11px;
+  }
+
+  .filter-field--search {
+    grid-column: 1 / -1;
+  }
+
+  .filter-toggle {
+    padding: 0 10px;
   }
 
   .ledger-panel {
@@ -1017,14 +1099,6 @@ onBeforeUnmount(() => {
 }
 
 @media (max-width: 520px) {
-  .filter-grid {
-    grid-template-columns: minmax(0, 1fr);
-  }
-
-  .filter-foot {
-    align-items: flex-start;
-  }
-
   .tx-card {
     padding: 13px;
   }

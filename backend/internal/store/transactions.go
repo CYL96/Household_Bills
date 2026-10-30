@@ -13,7 +13,7 @@ const transactionSelect = `
 	SELECT t.id, t.account_id, a.name, t.kind, t.amount_cents,
 	       t.category, t.tx_date, t.note,
 	       t.transfer_account_id, COALESCE(ta.name, ''),
-	       t.created_by, u.username
+	       t.created_by, COALESCE(NULLIF(u.nickname, ''), u.username)
 	FROM transactions t
 	JOIN accounts a ON a.id = t.account_id
 	LEFT JOIN accounts ta ON ta.id = t.transfer_account_id

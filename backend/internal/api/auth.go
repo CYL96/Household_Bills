@@ -30,6 +30,11 @@ func (a *API) handleMe(c *gin.Context) {
 		return
 	}
 	me, err := a.store.Me(c.Request.Context(), auth.User.ID)
+	if errors.Is(err, store.ErrNotFound) {
+		a.clearSessionCookie(c)
+		abortDetail(c, http.StatusUnauthorized, "请先登录。")
+		return
+	}
 	if err != nil {
 		a.logger.Printf("读取用户信息失败: %v", err)
 		abortDetail(c, http.StatusInternalServerError, "服务器内部错误。")
@@ -69,6 +74,11 @@ func (a *API) handleLogin(c *gin.Context) {
 	}
 
 	me, err := a.store.Me(c.Request.Context(), user.ID)
+	if errors.Is(err, store.ErrNotFound) {
+		// The account was deleted after its password was verified.
+		abortDetail(c, http.StatusBadRequest, "用户名或密码错误。")
+		return
+	}
 	if err != nil {
 		a.logger.Printf("读取用户信息失败: %v", err)
 		abortDetail(c, http.StatusInternalServerError, "服务器内部错误。")

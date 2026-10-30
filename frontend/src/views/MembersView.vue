@@ -1,23 +1,64 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import {
-  InfoFilled,
+  Delete,
+  Edit,
+  Plus,
   RefreshRight,
   UserFilled,
   WarningFilled,
 } from '@element-plus/icons-vue'
 import EmptyState from '../components/EmptyState.vue'
+import UserAvatar from '../components/UserAvatar.vue'
+import UserDialog from '../components/UserDialog.vue'
+import UserProfileDialog from '../components/UserProfileDialog.vue'
 import { getErrorMessage } from '../api/client'
-import { authState, refreshAuth } from '../stores/auth'
+import type { User } from '../api/types'
+import { deleteUser } from '../api/users'
+import {
+  addAuthMember,
+  authState,
+  familyMembers,
+  refreshAuth,
+  removeAuthMember,
+} from '../stores/auth'
+import { displayName } from '../utils/user'
 
 const refreshing = ref(false)
 const errorMessage = ref('')
+const dialogVisible = ref(false)
+const editingUserId = ref<number | null>(null)
+const deletingId = ref<number | null>(null)
 
 const household = computed(() => authState.household)
-const members = computed(() => authState.members)
+const isAdmin = computed(() => authState.user?.is_admin === true)
+const actionDisabled = computed(
+  () => refreshing.value || deletingId.value !== null,
+)
+const editingMember = computed(() => {
+  if (editingUserId.value === null) return null
+  return (
+    authState.members.find((member) => member.id === editingUserId.value) ?? null
+  )
+})
+const editDialogVisible = computed({
+  get: () => editingMember.value !== null,
+  set: (visible: boolean) => {
+    if (!visible) editingUserId.value = null
+  },
+})
+
+function canEdit(member: User): boolean {
+  return isAdmin.value || member.id === authState.user?.id
+}
+
+function canDelete(member: User): boolean {
+  return isAdmin.value && !member.is_admin
+}
 
 async function refreshMembers(): Promise<void> {
-  if (refreshing.value) return
+  if (refreshing.value || deletingId.value !== null) return
   refreshing.value = true
   errorMessage.value = ''
   try {
@@ -26,6 +67,45 @@ async function refreshMembers(): Promise<void> {
     errorMessage.value = getErrorMessage(error)
   } finally {
     refreshing.value = false
+  }
+}
+
+function handleUserCreated(user: User): void {
+  addAuthMember(user)
+}
+
+function openEdit(member: User): void {
+  if (actionDisabled.value || !canEdit(member)) return
+  editingUserId.value = member.id
+}
+
+async function handleDelete(member: User): Promise<void> {
+  if (actionDisabled.value || !canDelete(member)) return
+  deletingId.value = member.id
+  try {
+    await ElMessageBox.confirm(
+      `删除“${displayName(member)}”后，该成员的所有登录会话会立即失效。其名下账户、账户归属、余额和历史流水均会保留，账户归属可在账户编辑中调整。`,
+      '删除成员',
+      {
+        confirmButtonText: '删除成员',
+        cancelButtonText: '取消',
+        type: 'warning',
+        confirmButtonClass: 'el-button--danger',
+      },
+    )
+  } catch {
+    deletingId.value = null
+    return
+  }
+
+  try {
+    await deleteUser(member.id)
+    removeAuthMember(member.id)
+    ElMessage.success('成员已删除，历史流水已保留。')
+  } catch (error) {
+    ElMessage.error(getErrorMessage(error))
+  } finally {
+    deletingId.value = null
   }
 }
 
@@ -38,15 +118,26 @@ onMounted(() => {
   <div class="members-page">
     <div class="page-heading">
       <div class="page-heading__copy">
-        <p class="page-eyebrow">家庭成员</p>
-        <h2>一起记录，一起看见</h2>
-        <p class="page-heading__subtitle">
-          每位成员独立登录，共享同一本家庭账本里的账户与收支。
-        </p>
+        <h2>家庭成员</h2>
       </div>
       <div class="heading-actions">
-        <el-button :icon="RefreshRight" :loading="refreshing" @click="refreshMembers">
+        <el-button
+          :icon="RefreshRight"
+          :loading="refreshing"
+          :disabled="deletingId !== null"
+          @click="refreshMembers"
+        >
           刷新成员
+        </el-button>
+        <el-button
+          v-if="isAdmin"
+          type="primary"
+          :icon="Plus"
+          :disabled="refreshing || deletingId !== null"
+          data-testid="user-create-button"
+          @click="dialogVisible = true"
+        >
+          新建用户
         </el-button>
       </div>
     </div>
@@ -67,64 +158,74 @@ onMounted(() => {
               <p class="page-eyebrow">家庭名单</p>
               <h3>{{ household.name }}</h3>
             </div>
-            <span class="member-count">
+            <span class="member-count" data-testid="member-count">
               <el-icon :size="13" aria-hidden="true"><UserFilled /></el-icon>
-              {{ members.length }} 位成员
+              {{ familyMembers.length }} 位成员
             </span>
           </header>
 
-          <ul v-if="members.length > 0" class="member-list" data-testid="member-list">
+          <ul
+            v-if="familyMembers.length > 0"
+            class="member-list"
+            data-testid="member-list"
+          >
             <li
-              v-for="(member, index) in members"
+              v-for="member in familyMembers"
               :key="member.id"
               class="member-row"
+              :data-user-id="member.id"
               data-testid="member-row"
             >
-              <span class="member-avatar" aria-hidden="true">
-                {{ [...member.username][0]?.toUpperCase() }}
-              </span>
+              <UserAvatar :user="member" :size="36" />
               <div class="member-copy">
-                <strong>{{ member.username }}</strong>
+                <strong>{{ displayName(member) }}</strong>
                 <span
                   v-if="member.id === authState.user?.id"
                   class="member-self"
                 >
                   当前账号
                 </span>
-                <span
-                  class="member-role"
-                  :class="member.is_admin ? 'is-admin' : 'is-member'"
-                >
-                  {{ member.is_admin ? '管理员' : '普通成员' }}
-                </span>
+                <span class="member-role is-member">普通成员</span>
               </div>
-              <span class="member-index" aria-hidden="true">
-                {{ String(index + 1).padStart(2, '0') }}
-              </span>
+              <div class="member-actions">
+                <el-button
+                  v-if="canEdit(member)"
+                  text
+                  size="small"
+                  :icon="Edit"
+                  data-testid="member-edit-button"
+                  :disabled="actionDisabled"
+                  :aria-label="`编辑${displayName(member)}`"
+                  @click="openEdit(member)"
+                >
+                  编辑
+                </el-button>
+                <el-button
+                  v-if="canDelete(member)"
+                  text
+                  size="small"
+                  type="danger"
+                  :icon="Delete"
+                  :loading="deletingId === member.id"
+                  data-testid="member-delete-button"
+                  :disabled="actionDisabled"
+                  :aria-label="`删除${displayName(member)}`"
+                  @click="handleDelete(member)"
+                >
+                  删除
+                </el-button>
+              </div>
             </li>
           </ul>
 
-          <p v-else class="members-empty">
-            还没有获取到成员列表，请点击刷新重试。
+          <p v-else class="members-empty" data-testid="members-empty">
+            还没有家庭成员。
+            {{ isAdmin ? '点击“新建用户”添加第一位成员。' : '请联系管理员添加成员。' }}
           </p>
 
           <p class="members-panel__foot">
-            成员账号由管理员创建；新账号会立即出现在这里，并共享全部账户和收支记录。
+            管理员可新建、编辑或删除成员；成员可以修改自己的资料和密码。
           </p>
-        </section>
-
-        <section class="surface-card access-note">
-          <div class="access-note__icon" aria-hidden="true">
-            <el-icon :size="19"><InfoFilled /></el-icon>
-          </div>
-          <div class="access-note__copy">
-            <h3>关于家庭共享</h3>
-            <ul>
-              <li>同一家庭的成员可以共同管理资金账户，并查看、添加、编辑和删除收支记录。</li>
-              <li>每个人使用自己的用户名和密码登录，退出登录只影响当前设备。</li>
-              <li>新成员账号由管理员创建，不需要自行注册。</li>
-            </ul>
-          </div>
         </section>
       </template>
 
@@ -142,6 +243,18 @@ onMounted(() => {
         </EmptyState>
       </div>
     </div>
+
+    <UserDialog
+      v-if="isAdmin"
+      v-model="dialogVisible"
+      @saved="handleUserCreated"
+    />
+
+    <UserProfileDialog
+      v-if="editingMember"
+      v-model="editDialogVisible"
+      :user="editingMember"
+    />
   </div>
 </template>
 
@@ -224,19 +337,6 @@ onMounted(() => {
   border-bottom: 0;
 }
 
-.member-avatar {
-  display: grid;
-  flex: 0 0 auto;
-  width: 36px;
-  height: 36px;
-  place-items: center;
-  color: var(--hb-teal-dark);
-  background: var(--hb-teal-faint);
-  border: 1px solid #d4e8e2;
-  border-radius: 50%;
-  font-size: 14px;
-  font-weight: 600;
-}
 
 .member-copy {
   display: flex;
@@ -253,6 +353,18 @@ onMounted(() => {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+.member-actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 2px;
+}
+
+.member-actions :deep(.el-button + .el-button) {
+  margin-left: 0;
+}
+
 
 .member-self {
   flex: 0 0 auto;
@@ -271,22 +383,12 @@ onMounted(() => {
   white-space: nowrap;
 }
 
-.member-role.is-admin {
-  color: #85551f;
-  background: #f8efdc;
-  border: 1px solid #eadbbd;
-}
 
 .member-role.is-member {
   color: var(--hb-ink-faint);
   background: #f3ede3;
 }
 
-.member-index {
-  color: #c7bdad;
-  font-size: 10px;
-  letter-spacing: 0.06em;
-}
 
 .members-panel__foot {
   margin-top: 10px;
@@ -304,43 +406,6 @@ onMounted(() => {
   text-align: center;
 }
 
-.access-note {
-  display: flex;
-  gap: 15px;
-  margin-top: 14px;
-  padding: 20px 23px;
-  background:
-    radial-gradient(500px 200px at 100% 100%, rgba(189, 106, 60, 0.06), transparent 70%),
-    var(--hb-surface);
-}
-
-.access-note__icon {
-  display: grid;
-  flex: 0 0 auto;
-  width: 38px;
-  height: 38px;
-  place-items: center;
-  color: var(--hb-terracotta);
-  background: var(--hb-terracotta-soft);
-  border: 1px solid #efd7c6;
-  border-radius: 11px;
-}
-
-.access-note__copy h3 {
-  font-size: 15px;
-}
-
-.access-note__copy ul {
-  margin: 8px 0 0;
-  padding-left: 17px;
-  color: var(--hb-ink-soft);
-  font-size: 12px;
-  line-height: 1.9;
-}
-
-.access-note__copy li::marker {
-  color: var(--hb-line-strong);
-}
 
 .members-error {
   padding: 14px;
@@ -351,23 +416,19 @@ onMounted(() => {
     padding: 19px 18px;
   }
 
+  .member-row {
+    flex-wrap: wrap;
+  }
+
   .member-copy {
     flex-wrap: wrap;
     gap: 5px;
   }
 
-  .access-note {
-    padding: 17px;
-    gap: 11px;
-  }
-
-  .access-note__icon {
-    width: 34px;
-    height: 34px;
-  }
-
-  .access-note__copy ul {
-    padding-left: 15px;
+  .member-actions {
+    width: 100%;
+    justify-content: flex-end;
+    padding-left: 47px;
   }
 }
 </style>

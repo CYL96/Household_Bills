@@ -10,11 +10,16 @@ import (
 
 var (
 	ErrNotFound                  = errors.New("记录不存在")
+	ErrInvalidOwner              = errors.New("账户归属成员不存在")
 	ErrInvalidAccount            = errors.New("账户不存在")
 	ErrInvalidTransfer           = errors.New("转入账户无效")
 	ErrTransferAccountNotAllowed = errors.New("非转账交易不能设置转入账户")
 	ErrUsernameTaken             = errors.New("用户名已被使用")
 	ErrPasswordChanged           = errors.New("登录凭据已变更")
+	ErrForbidden                 = errors.New("没有权限执行此操作")
+	ErrInvalidCurrentPassword    = errors.New("当前密码错误")
+	ErrAdminUsernameFixed        = errors.New("管理员用户名不可修改")
+	ErrAdminNotDeletable         = errors.New("管理员账号不可删除")
 )
 
 // TransferCategory is the fixed category for transfer transactions. Transfers
@@ -65,9 +70,11 @@ func (s *Store) Pool() *pgxpool.Pool {
 }
 
 type UserRef struct {
-	ID       int64  `json:"id"`
-	Username string `json:"username"`
-	IsAdmin  bool   `json:"is_admin"`
+	ID            int64  `json:"id"`
+	Username      string `json:"username"`
+	Nickname      string `json:"nickname"`
+	IsAdmin       bool   `json:"is_admin"`
+	AvatarVersion int    `json:"avatar_version"`
 }
 
 type HouseholdRef struct {
@@ -96,6 +103,8 @@ type Account struct {
 	Name                string
 	OpeningBalanceCents int64
 	BalanceCents        int64
+	OwnerID             *int64
+	OwnerName           string
 }
 
 type Transaction struct {
@@ -113,9 +122,14 @@ type Transaction struct {
 	CreatedByName       string
 }
 
+// AccountUpdate leaves fields nil when they were omitted. OwnerSet
+// distinguishes an omitted owner from an explicit null, since an explicit null
+// must make the wallet public while an omitted field preserves the owner.
 type AccountUpdate struct {
 	Name           *string
 	OpeningBalance *int64
+	OwnerID        *int64
+	OwnerSet       bool
 }
 
 type TransactionInput struct {

@@ -1,14 +1,13 @@
 <script setup lang="ts">
-import { computed, type Component } from 'vue'
+import type { Component } from 'vue'
 import { useRoute } from 'vue-router'
 import {
-  Management,
   Odometer,
   Tickets,
   UserFilled,
   Wallet,
 } from '@element-plus/icons-vue'
-import { authState } from '../stores/auth'
+import { authState, familyMembers } from '../stores/auth'
 
 interface NavItem {
   to: string
@@ -22,14 +21,6 @@ const baseNavItems: NavItem[] = [
   { to: '/accounts', label: '资金账户', icon: Wallet },
   { to: '/members', label: '家庭成员', icon: UserFilled },
 ]
-
-const navItems = computed<NavItem[]>(() => {
-  if (!authState.user?.is_admin) return baseNavItems
-  return [
-    ...baseNavItems,
-    { to: '/users', label: '用户管理', icon: Management },
-  ]
-})
 
 const route = useRoute()
 const emit = defineEmits<{
@@ -54,11 +45,10 @@ function isActive(path: string): boolean {
 
     <nav class="nav-list" aria-label="主导航">
       <router-link
-        v-for="item in navItems"
+        v-for="item in baseNavItems"
         :key="item.to"
         :to="item.to"
         class="nav-link"
-        :data-testid="item.to === '/users' ? 'nav-users' : undefined"
         :class="{ 'is-active': isActive(item.to) }"
         :aria-current="isActive(item.to) ? 'page' : undefined"
         @click="emit('navigate')"
@@ -74,7 +64,7 @@ function isActive(path: string): boolean {
       <p class="nav-foot__label">当前家庭</p>
       <p class="nav-foot__name">{{ authState.household?.name ?? '家庭账本' }}</p>
       <p class="nav-foot__meta">
-        {{ authState.members.length }} 位成员 · 人民币记账
+        {{ familyMembers.length }} 位成员 · 人民币记账
       </p>
     </div>
   </div>

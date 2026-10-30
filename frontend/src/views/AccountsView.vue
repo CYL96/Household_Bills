@@ -5,6 +5,7 @@ import {
   EditPen,
   Plus,
   RefreshRight,
+  User,
   Wallet,
   WarningFilled,
 } from '@element-plus/icons-vue'
@@ -167,9 +168,21 @@ watch(dataVersion, () => {
           class="surface-card account-card"
         >
           <div class="account-card__top">
-            <span class="account-card__icon" aria-hidden="true">
-              <el-icon :size="19"><Wallet /></el-icon>
-            </span>
+            <div class="account-card__identity">
+              <span class="account-card__icon" aria-hidden="true">
+                <el-icon :size="19"><Wallet /></el-icon>
+              </span>
+              <span
+                class="account-card__owner"
+                :class="{ 'is-public': !account.owner }"
+                :title="account.owner ? `归属成员：${account.owner_name}` : '公共账户，全家共用'"
+              >
+                <el-icon :size="12" aria-hidden="true"><User /></el-icon>
+                <span class="account-card__owner-name">
+                  {{ account.owner ? `归属：${account.owner_name}` : '公共账户' }}
+                </span>
+              </span>
+            </div>
             <el-button
               text
               circle
@@ -275,6 +288,39 @@ watch(dataVersion, () => {
   display: flex;
   align-items: center;
   justify-content: space-between;
+}
+
+.account-card__identity {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  gap: 8px;
+}
+
+.account-card__owner {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+  gap: 4px;
+  max-width: 170px;
+  padding: 3px 9px;
+  color: var(--hb-ink-soft);
+  background: #faf6ef;
+  border: 1px solid var(--hb-line);
+  border-radius: 999px;
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: nowrap;
+}
+
+.account-card__owner.is-public {
+  color: var(--hb-ink-faint);
+  border-style: dashed;
+}
+
+.account-card__owner-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .account-card__icon {

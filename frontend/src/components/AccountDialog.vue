@@ -4,8 +4,10 @@ import { ElMessage, type FormInstance, type FormRules } from 'element-plus'
 import { getErrorMessage } from '../api/client'
 import { createAccount, updateAccount } from '../api/accounts'
 import type { Account, AccountPayload } from '../api/types'
+import { authState, familyMembers } from '../stores/auth'
 import { markDataChanged } from '../stores/data'
 import { decimalString } from '../utils/format'
+import { displayName } from '../utils/user'
 
 const props = defineProps<{
   modelValue: boolean
@@ -21,13 +23,67 @@ const formRef = ref<FormInstance>()
 const saving = ref(false)
 const errorMessage = ref('')
 
+/** 下拉框不接受 null 作为选项值，用 0 代表“公共账户”，提交时还原为 null。 */
+const PUBLIC_OWNER_VALUE = 0
+
 const form = reactive({
   name: '',
   opening_balance: 0 as number | undefined,
+  owner: null as number | null,
 })
 
 const isEditing = computed(() => Boolean(props.account))
 const dialogTitle = computed(() => (isEditing.value ? '编辑资金账户' : '添加资金账户'))
+
+const ownerSelection = computed<number>({
+  get: () => form.owner ?? PUBLIC_OWNER_VALUE,
+  set: (value) => {
+    form.owner = value === PUBLIC_OWNER_VALUE ? null : value
+  },
+})
+
+type OwnerOption = {
+  value: number
+  label: string
+  disabled?: boolean
+}
+
+const ownerOptions = computed<OwnerOption[]>(() => {
+  const selectableMembers = familyMembers.value
+  const options: OwnerOption[] = [
+    { value: PUBLIC_OWNER_VALUE, label: '公共账户' },
+    ...selectableMembers.map((member) => ({
+      value: member.id,
+      label: displayName(member),
+    })),
+  ]
+  const account = props.account
+  const currentOwner = account?.owner
+  if (
+    !account ||
+    currentOwner == null ||
+    selectableMembers.some((member) => member.id === currentOwner)
+  ) {
+    return options
+  }
+
+  // 历史归属可能指向管理员或已删除成员：仅用于回显原名，禁止重新选中。
+  const member = authState.members.find((item) => item.id === currentOwner)
+  if (member?.is_admin) {
+    options.push({
+      value: currentOwner,
+      label: `${displayName(member)}（管理员）`,
+      disabled: true,
+    })
+  } else {
+    options.push({
+      value: currentOwner,
+      label: `${account.owner_name || '已删除成员'}（已删除）`,
+      disabled: true,
+    })
+  }
+  return options
+})
 
 const visible = computed({
   get: () => props.modelValue,
@@ -84,6 +140,7 @@ function resetForm(): void {
     form.name = ''
     form.opening_balance = 0
   }
+  form.owner = props.account?.owner ?? null
   void nextTick(() => {
     formRef.value?.clearValidate()
   })
@@ -117,6 +174,13 @@ async function submit(): Promise<void> {
     const payload: AccountPayload = {
       name: form.name.trim(),
       opening_balance: decimalString(form.opening_balance),
+    }
+
+    // 新建时显式发送归属（null 即公共账户）；编辑时仅在变更后发送，
+    // 这样管理员或已删除成员的原有归属可以通过省略字段继续保留。
+    const originalOwner = props.account?.owner ?? null
+    if (!props.account || form.owner !== originalOwner) {
+      payload.owner = form.owner
     }
 
     if (props.account) {
@@ -186,8 +250,25 @@ async function submit(): Promise<void> {
         />
       </el-form-item>
 
+      <el-form-item label="账户归属" prop="owner">
+        <el-select
+          v-model="ownerSelection"
+          class="owner-select"
+          size="large"
+          aria-label="账户归属"
+        >
+          <el-option
+            v-for="option in ownerOptions"
+            :key="option.value"
+            :label="option.label"
+            :value="option.value"
+            :disabled="option.disabled"
+          />
+        </el-select>
+      </el-form-item>
+
       <p class="account-hint">
-        期初余额可以为负数，例如信用卡待还金额。当前余额由期初余额与全部收支自动计算，不能直接修改。
+        期初余额可以为负数，例如信用卡待还金额。当前余额由期初余额与全部收支自动计算，不能直接修改。账户归属只用于标记这个钱包由谁使用，可选“公共账户”或普通家庭成员；选择“公共账户”时全家成员仍可共同使用。
       </p>
     </el-form>
 
@@ -210,6 +291,10 @@ async function submit(): Promise<void> {
 .account-form :deep(.el-form-item__label) {
   padding-bottom: 6px;
   font-size: 12px;
+}
+
+.owner-select {
+  width: 100%;
 }
 
 .account-hint {

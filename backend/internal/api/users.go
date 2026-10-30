@@ -3,6 +3,7 @@ package api
 import (
 	"errors"
 	"net/http"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 
@@ -12,6 +13,7 @@ import (
 
 type createUserRequest struct {
 	Username string `json:"username"`
+	Nickname string `json:"nickname"`
 	Password string `json:"password"`
 }
 
@@ -52,6 +54,14 @@ func (a *API) handleCreateUser(c *gin.Context) {
 	if usernameMessage != "" {
 		fields["username"] = []string{usernameMessage}
 	}
+	nickname := strings.TrimSpace(request.Nickname)
+	if nickname != "" {
+		var nicknameMessage string
+		nickname, nicknameMessage = cleanText(nickname, 50, "昵称")
+		if nicknameMessage != "" {
+			fields["nickname"] = []string{nicknameMessage}
+		}
+	}
 	if message := credentials.PasswordValidationError(request.Password); message != "" {
 		fields["password"] = []string{message}
 	}
@@ -68,7 +78,7 @@ func (a *API) handleCreateUser(c *gin.Context) {
 	}
 
 	user, err := a.store.CreateUser(
-		c.Request.Context(), auth.User.HouseholdID, username, passwordHash)
+		c.Request.Context(), auth.User.HouseholdID, username, nickname, passwordHash)
 	switch {
 	case errors.Is(err, store.ErrUsernameTaken):
 		abortFields(c, map[string][]string{"username": {"该用户名已被使用。"}})

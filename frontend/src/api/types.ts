@@ -3,7 +3,9 @@ export type TransactionKind = 'income' | 'expense' | 'transfer'
 export interface User {
   id: number
   username: string
+  nickname: string
   is_admin: boolean
+  avatar_version: number
 }
 
 export interface Household {
@@ -24,7 +26,15 @@ export interface LoginPayload {
 
 export interface CreateUserPayload {
   username: string
+  nickname?: string
   password: string
+}
+
+export interface UpdateUserPayload {
+  username?: string
+  nickname?: string
+  password?: string
+  current_password?: string
 }
 
 export interface Account {
@@ -32,11 +42,18 @@ export interface Account {
   name: string
   opening_balance: string
   balance: string
+  owner: number | null
+  owner_name: string
 }
 
 export interface AccountPayload {
   name: string
   opening_balance: string
+  /**
+   * 新建时省略即为公共账户；修改时省略保持原归属。
+   * null 明确表示公共账户，数字表示现有非管理员家庭成员的用户 ID。
+   */
+  owner?: number | null
 }
 
 export interface Transaction {

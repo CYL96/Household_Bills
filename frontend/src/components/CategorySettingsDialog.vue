@@ -7,7 +7,7 @@ import {
   watch,
   type ComponentPublicInstance,
 } from 'vue'
-import { Close, Lock, Rank, Sort, View } from '@element-plus/icons-vue'
+import { Back, Close, Plus, Rank } from '@element-plus/icons-vue'
 import { authState } from '../stores/auth'
 import {
   readCategoryEntries,
@@ -16,6 +16,7 @@ import {
   type CategoryKind,
 } from '../stores/categories'
 import { categoryIcon } from '../utils/categoryIcons'
+import CategoryEditor from './CategoryEditor.vue'
 
 const props = defineProps<{
   modelValue: boolean
@@ -28,11 +29,10 @@ const emit = defineEmits<{
   (event: 'saved', selectedCategory?: string): void
 }>()
 
-const MAX_CATEGORY_LENGTH = 64
 const DRAG_THRESHOLD = 6
 const DRAG_EDGE_SIZE = 64
 const DRAG_MAX_SCROLL_SPEED = 18
-const SORT_HINT_ID = 'category-sort-hint'
+const HIDDEN_HINT_ID = 'category-hidden-hint'
 const KEY_DELTAS: Record<string, number> = {
   ArrowUp: -1,
   ArrowDown: 1,
@@ -40,7 +40,7 @@ const KEY_DELTAS: Record<string, number> = {
   ArrowRight: 1,
 }
 
-type SettingsMode = 'sort' | 'manage'
+type EditorMode = 'create' | 'edit' | null
 
 interface LayoutSlot {
   left: number
@@ -64,13 +64,14 @@ interface DragSession {
 }
 
 const draft = ref<CategoryEntry[]>([])
-const newCategory = ref('')
 const addedNames = ref<string[]>([])
-const addError = ref('')
 const errorMessage = ref('')
 const saving = ref(false)
-const mode = ref<SettingsMode>('sort')
+const editorMode = ref<EditorMode>(null)
+const editingName = ref<string | null>(null)
+const preferredName = ref<string | null>(null)
 const dragName = ref<string | null>(null)
+const dragBusy = ref(false)
 const liveMessage = ref('')
 const gridScrollRef = ref<HTMLElement | null>(null)
 const gridGroupRef = ref<ComponentPublicInstance | null>(null)
@@ -78,7 +79,6 @@ const gridRef = computed<HTMLElement | null>(() => {
   const element = gridGroupRef.value?.$el
   return element instanceof HTMLElement ? element : null
 })
-const manageListRef = ref<HTMLElement | null>(null)
 
 let openedScope: string | null = null
 let dragSession: DragSession | null = null
@@ -97,13 +97,25 @@ const hiddenCount = computed(() => draft.value.length - visibleCount.value)
 const visibleEntries = computed(() =>
   draft.value.filter((entry) => entry.visible),
 )
-const modeToggleText = computed(() =>
-  mode.value === 'sort' ? '显示/隐藏' : '返回排序',
+const hiddenEntries = computed(() =>
+  draft.value.filter((entry) => !entry.visible),
 )
-const modeToggleAria = computed(() =>
-  mode.value === 'sort'
-    ? '进入显示和隐藏分类面板'
-    : '返回图标排序面板',
+const orderedEntries = computed(() => [
+  ...visibleEntries.value,
+  ...hiddenEntries.value,
+])
+const draftNames = computed(() => draft.value.map((entry) => entry.name))
+const editorOpen = computed(() => editorMode.value !== null)
+const isCreating = computed(() => editorMode.value === 'create')
+const editingEntry = computed(() =>
+  editingName.value === null
+    ? undefined
+    : draft.value.find((entry) => entry.name === editingName.value),
+)
+const editorKey = computed(() =>
+  editorMode.value === 'create'
+    ? 'create'
+    : (editingName.value ?? 'none'),
 )
 
 function currentScope(): string | null {
@@ -113,30 +125,41 @@ function currentScope(): string | null {
   return `${householdId}:${userId}`
 }
 
+function currentCategoryName(): string | null {
+  const current = props.currentCategory?.trim()
+  return current ? current : null
+}
+
+function copyEntry(entry: CategoryEntry): CategoryEntry {
+  const copy: CategoryEntry = { ...entry }
+  if (entry.previousNames) copy.previousNames = [...entry.previousNames]
+  return copy
+}
+
 function copyEntries(entries: CategoryEntry[]): CategoryEntry[] {
-  return entries.map((entry) => ({ ...entry }))
+  return entries.map(copyEntry)
 }
 
 function loadDraft(): void {
+  closeEditor()
   cancelDrag(false)
   openedScope = currentScope()
-  draft.value = readCategoryEntries(props.kind, props.currentCategory)
-  newCategory.value = ''
-  addError.value = ''
-  errorMessage.value = ''
+  draft.value = copyEntries(
+    readCategoryEntries(props.kind, props.currentCategory),
+  )
   addedNames.value = []
-  mode.value = 'sort'
+  preferredName.value = currentCategoryName()
+  errorMessage.value = ''
   liveMessage.value = ''
 }
 
 function clearTransientState(): void {
+  closeEditor()
   cancelDrag(false)
-  newCategory.value = ''
-  addError.value = ''
-  errorMessage.value = ''
-  addedNames.value = []
   draft.value = []
-  mode.value = 'sort'
+  addedNames.value = []
+  preferredName.value = null
+  errorMessage.value = ''
   liveMessage.value = ''
   openedScope = null
 }
@@ -156,7 +179,7 @@ watch(
 watch([() => authState.user?.id, () => authState.household?.id], () => {
   if (!props.modelValue) return
   if (currentScope() !== openedScope) {
-    cancelDrag(false)
+    clearTransientState()
     emit('update:modelValue', false)
   }
 })
@@ -165,74 +188,195 @@ onBeforeUnmount(() => {
   cancelDrag(false)
 })
 
+function closeEditor(): void {
+  editorMode.value = null
+  editingName.value = null
+}
+
 function closeDialog(): void {
+  closeEditor()
   cancelDrag(false)
   emit('update:modelValue', false)
 }
 
+function handleHeaderClose(): void {
+  if (isCreating.value) {
+    cancelEditor()
+    return
+  }
+  closeDialog()
+}
+
 function handleDialogClosed(): void {
+  closeEditor()
   cancelDrag(false)
 }
 
-function toggleMode(): void {
+function openCreate(): void {
   if (saving.value) return
+  if (editorMode.value !== null) {
+    errorMessage.value = '请先应用或取消当前编辑，再新增分类'
+    return
+  }
   cancelDrag(true)
-  mode.value = mode.value === 'sort' ? 'manage' : 'sort'
+  editorMode.value = 'create'
+  editingName.value = null
+  errorMessage.value = ''
+  liveMessage.value = '已打开新增分类表单'
+}
+
+function openEdit(name: string): void {
+  if (saving.value) return
+  if (editorMode.value !== null) {
+    errorMessage.value = '请先应用或取消当前编辑，再编辑其他分类'
+    return
+  }
+  const entry = draft.value.find((item) => item.name === name)
+  if (!entry) return
+  cancelDrag(true)
+  editorMode.value = 'edit'
+  editingName.value = name
+  errorMessage.value = ''
+  liveMessage.value = `正在编辑分类${name}`
+}
+
+function cancelEditor(): void {
+  if (saving.value) return
+  const mode = editorMode.value
+  closeEditor()
+  errorMessage.value = ''
   liveMessage.value =
-    mode.value === 'manage'
-      ? '已打开显示和隐藏分类面板'
-      : '已返回图标排序面板'
+    mode === 'edit' ? '已取消编辑，分类保持原样' : '已取消新增分类'
 }
 
-function clearErrors(): void {
-  addError.value = ''
+function mergePreviousNames(
+  entry: CategoryEntry,
+  newName: string,
+): string[] {
+  const merged: string[] = []
+  for (const previous of [...(entry.previousNames ?? []), entry.name]) {
+    if (previous === newName || merged.includes(previous)) continue
+    merged.push(previous)
+  }
+  return merged
+}
+
+function applyEditorEntry(entry: CategoryEntry): void {
+  if (saving.value) return
+  const mode = editorMode.value
+  if (mode === null) return
   errorMessage.value = ''
+  // The editor owns only the name and icon. Visibility and rename metadata
+  // always come from the current draft entry so later list changes win over
+  // the snapshot taken when the editor opened.
+  const newName = entry.name
+  const newIcon = entry.icon
+
+  if (mode === 'create') {
+    if (draft.value.some((item) => item.name === newName)) {
+      errorMessage.value = '该分类已存在（包括已隐藏分类），请换个名称'
+      return
+    }
+    const created: CategoryEntry = { name: newName, visible: true }
+    if (newIcon !== undefined) created.icon = newIcon
+    draft.value = [...draft.value, created]
+    addedNames.value = Array.from(new Set([...addedNames.value, newName]))
+    liveMessage.value = `已添加分类${newName}，当前为显示状态`
+    closeEditor()
+    void nextTick(() => revealCard(newName))
+    return
+  }
+
+  const originalName = editingName.value
+  if (originalName === null) {
+    closeEditor()
+    return
+  }
+  const index = draft.value.findIndex((item) => item.name === originalName)
+  const oldEntry = index >= 0 ? draft.value[index] : undefined
+  if (!oldEntry) {
+    closeEditor()
+    return
+  }
+  if (
+    newName !== originalName &&
+    draft.value.some(
+      (item, itemIndex) => itemIndex !== index && item.name === newName,
+    )
+  ) {
+    errorMessage.value = '该分类已存在（包括已隐藏分类），请换个名称'
+    return
+  }
+
+  const nextEntry: CategoryEntry = {
+    ...oldEntry,
+    name: newName,
+    visible: oldEntry.visible,
+  }
+  if (newIcon !== undefined) nextEntry.icon = newIcon
+  if (oldEntry.defaultName !== undefined) {
+    nextEntry.defaultName = oldEntry.defaultName
+  }
+  if (newName !== originalName) {
+    const previousNames = mergePreviousNames(oldEntry, newName)
+    if (previousNames.length > 0) {
+      nextEntry.previousNames = previousNames
+    } else {
+      delete nextEntry.previousNames
+    }
+    addedNames.value = Array.from(
+      new Set(
+        addedNames.value.map((name) =>
+          name === originalName ? newName : name,
+        ),
+      ),
+    )
+    if (preferredName.value === originalName) {
+      preferredName.value = newName
+    }
+    liveMessage.value = `已将分类${originalName}重命名为${newName}，历史账目保持不变`
+  } else {
+    liveMessage.value = `已更新分类${newName}的图标`
+  }
+
+  draft.value = draft.value.map((item, itemIndex) =>
+    itemIndex === index ? nextEntry : item,
+  )
+  closeEditor()
+  void nextTick(() => revealCard(newName))
 }
 
-function addCategory(): void {
-  addError.value = ''
-  const name = newCategory.value.trim()
-  if (!name) {
-    addError.value = '请输入分类名称'
-    return
+function revealCard(name: string): void {
+  const scroll = gridScrollRef.value
+  if (!scroll) return
+  const card = Array.from(
+    scroll.querySelectorAll<HTMLElement>('[data-category-card-name]'),
+  ).find((element) => element.dataset.categoryCardName === name)
+  if (!card) return
+  const scrollRect = scroll.getBoundingClientRect()
+  const cardRect = card.getBoundingClientRect()
+  if (cardRect.top < scrollRect.top) {
+    scroll.scrollTop -= scrollRect.top - cardRect.top + 8
+  } else if (cardRect.bottom > scrollRect.bottom) {
+    scroll.scrollTop += cardRect.bottom - scrollRect.bottom + 8
   }
-  if (name.includes('\u0000')) {
-    addError.value = '分类名称不能包含空字符'
-    return
-  }
-  if (Array.from(name).length > MAX_CATEGORY_LENGTH) {
-    addError.value = `分类名称最多 ${MAX_CATEGORY_LENGTH} 个字符`
-    return
-  }
-  if (draft.value.some((entry) => entry.name === name)) {
-    addError.value = '该分类已存在，可在面板中调整其显示状态'
-    return
-  }
-
-  draft.value = [...draft.value, { name, visible: true }]
-  addedNames.value = [...addedNames.value, name]
-  newCategory.value = ''
-  errorMessage.value = ''
-  liveMessage.value = `已添加分类${name}，当前为显示状态`
-  void nextTick(() => {
-    const list = manageListRef.value
-    if (list) list.scrollTop = list.scrollHeight
-  })
-}
-
-function handleAddKeydown(event: Event | KeyboardEvent): void {
-  if (!('isComposing' in event) || event.isComposing) return
-  event.preventDefault()
-  event.stopPropagation()
-  addCategory()
 }
 
 function handleVisibilityChange(entry: CategoryEntry): void {
-  addError.value = ''
+  if (dragSession) {
+    cancelDrag(true)
+    errorMessage.value = '请先完成拖动，再调整分类的显示状态'
+    return
+  }
   errorMessage.value = ''
-  liveMessage.value = entry.visible
-    ? `已显示分类${entry.name}`
-    : `已隐藏分类${entry.name}，历史账目不会删除`
+  if (entry.visible) {
+    liveMessage.value = `已显示分类${entry.name}`
+    return
+  }
+  liveMessage.value = `已隐藏分类${entry.name}，历史账目不会删除`
+  if (!draft.value.some((item) => item.visible)) {
+    errorMessage.value = '请至少保留一个显示的分类'
+  }
 }
 
 function moveEntryToName(sourceName: string, targetName: string): boolean {
@@ -248,22 +392,45 @@ function moveEntryToName(sourceName: string, targetName: string): boolean {
   return true
 }
 
-function handleTileKeydown(event: KeyboardEvent, name: string): void {
-  if (saving.value || dragSession || mode.value !== 'sort') return
+function canMoveEntry(entry: CategoryEntry, delta: number): boolean {
+  const group = entry.visible ? visibleEntries.value : hiddenEntries.value
+  const index = group.findIndex((item) => item.name === entry.name)
+  if (index < 0) return false
+  const target = index + delta
+  return target >= 0 && target < group.length
+}
+
+function moveEntryBy(name: string, delta: number): boolean {
+  if (dragSession) cancelDrag(true)
+  if (!Number.isInteger(delta) || delta === 0) return false
+  const entry = draft.value.find((item) => item.name === name)
+  if (!entry) return false
+  const group = entry.visible ? visibleEntries.value : hiddenEntries.value
+  const index = group.findIndex((item) => item.name === name)
+  const target = group[index + delta]
+  if (!target) return false
+  if (!moveEntryToName(name, target.name)) return false
+  const nextGroup = entry.visible ? visibleEntries.value : hiddenEntries.value
+  const nextIndex = nextGroup.findIndex((item) => item.name === name)
+  const groupLabel = entry.visible ? '显示' : '隐藏'
+  liveMessage.value = `已将分类${name}移动到${groupLabel}顺序第 ${nextIndex + 1} 位`
+  return true
+}
+
+function handleCardKeydown(event: KeyboardEvent, name: string): void {
+  if (saving.value || dragSession) return
   if (event.altKey || event.ctrlKey || event.metaKey) return
+  const target = event.target
+  if (
+    target instanceof HTMLElement &&
+    target.closest('input, textarea, select')
+  ) {
+    return
+  }
   const delta = KEY_DELTAS[event.key]
   if (delta === undefined) return
   event.preventDefault()
-  const entries = visibleEntries.value
-  const index = entries.findIndex((entry) => entry.name === name)
-  if (index < 0) return
-  const target = entries[index + delta]
-  if (!target) return
-  if (!moveEntryToName(name, target.name)) return
-  const nextIndex = visibleEntries.value.findIndex(
-    (entry) => entry.name === name,
-  )
-  liveMessage.value = `已将分类${name}移动到显示顺序第 ${nextIndex + 1} 位`
+  moveEntryBy(name, delta)
 }
 
 function clamp(value: number, min: number, max: number): number {
@@ -438,12 +605,13 @@ function cleanupDragSession(session: DragSession): void {
   } catch {
     // The pointer may already be released.
   }
+  dragBusy.value = false
 }
 
 function cancelDrag(restore = true): void {
   const session = dragSession
   if (!session) {
-    dragName.value = null
+    dragBusy.value = false
     return
   }
   dragSession = null
@@ -524,14 +692,14 @@ function suppressContextMenu(event: Event): void {
 }
 
 function beginTileDrag(event: PointerEvent, name: string): void {
-  // Mouse can drag from the icon surface; touch uses the dedicated grip so
+  // Mouse can drag from the card surface; touch uses the dedicated grip so
   // the grid itself stays scrollable by finger.
   if (event.pointerType !== 'mouse') return
   beginDrag(event, name)
 }
 
 function beginDrag(event: PointerEvent, name: string): void {
-  if (saving.value || mode.value !== 'sort') return
+  if (saving.value || editorMode.value !== null) return
   // A second finger or a second pointerdown while a gesture is pending must
   // not replace or cancel the gesture that owns the capture.
   if (dragSession) return
@@ -561,6 +729,8 @@ function beginDrag(event: PointerEvent, name: string): void {
     slots: [],
   }
 
+  dragBusy.value = true
+
   try {
     captureTarget.setPointerCapture(event.pointerId)
   } catch {
@@ -580,9 +750,39 @@ function beginDrag(event: PointerEvent, name: string): void {
   }
 }
 
+function lastVisibleAddedName(): string | undefined {
+  for (let index = addedNames.value.length - 1; index >= 0; index -= 1) {
+    const name = addedNames.value[index]
+    if (
+      name !== undefined &&
+      draft.value.some((entry) => entry.name === name && entry.visible)
+    ) {
+      return name
+    }
+  }
+  return undefined
+}
+
+function renamedCurrentSelection(): string | undefined {
+  const original = currentCategoryName()
+  const preferred = preferredName.value
+  if (!original || !preferred || original === preferred) return undefined
+  const entry = draft.value.find((item) => item.name === preferred)
+  return entry?.visible ? preferred : undefined
+}
+
 function submit(): void {
   if (saving.value) return
-  if (dragSession) cancelDrag(true)
+  if (editorMode.value !== null) {
+    errorMessage.value = '请先应用或取消正在编辑的分类，再保存设置'
+    liveMessage.value = errorMessage.value
+    return
+  }
+  if (dragSession) {
+    cancelDrag(true)
+    errorMessage.value = '请先完成拖动，再保存设置'
+    return
+  }
   errorMessage.value = ''
 
   if (currentScope() !== openedScope) {
@@ -598,13 +798,9 @@ function submit(): void {
   try {
     saveCategoryEntries(
       props.kind,
-      draft.value.map((entry) => ({ ...entry })),
+      orderedEntries.value.map(copyEntry),
     )
-    const selected = [...addedNames.value]
-      .reverse()
-      .find((name) =>
-        draft.value.some((entry) => entry.name === name && entry.visible),
-      )
+    const selected = lastVisibleAddedName() ?? renamedCurrentSelection()
     emit('saved', selected)
     closeDialog()
   } catch (error) {
@@ -623,218 +819,279 @@ function submit(): void {
     v-model="visible"
     :title="dialogTitle"
     class="ledger-dialog category-settings-dialog"
+    :class="{ 'is-creating': isCreating }"
     fullscreen
     append-to-body
-    :close-on-click-modal="!saving"
-    :close-on-press-escape="!saving"
+    :close-on-click-modal="!saving && !editorOpen"
+    :close-on-press-escape="!saving && !editorOpen"
     :show-close="false"
     @closed="handleDialogClosed"
   >
     <template #header>
-      <div class="category-settings-header">
+      <div
+        class="category-settings-header"
+        :class="{ 'is-creating': isCreating }"
+      >
         <button
           type="button"
           class="category-settings-header__close"
-          aria-label="关闭分类设置"
-          title="关闭"
+          :aria-label="isCreating ? '返回分类管理' : '关闭分类设置'"
+          :title="isCreating ? '返回分类管理' : '关闭'"
           :disabled="saving"
-          @click="closeDialog"
-        >
-          <el-icon><Close /></el-icon>
-        </button>
-        <div class="category-settings-header__heading">
-          <span class="category-settings-header__title">{{ dialogTitle }}</span>
-          <span class="category-settings-header__subtitle">
-            {{ mode === 'sort' ? '拖动图标调整顺序' : '管理分类的显示与隐藏' }}
-          </span>
-        </div>
-        <button
-          type="button"
-          class="category-settings-header__mode category-settings-mode-toggle"
-          :aria-label="modeToggleAria"
-          :title="modeToggleText"
-          :disabled="saving"
-          @click="toggleMode"
+          @click="handleHeaderClose"
         >
           <el-icon>
-            <component :is="mode === 'sort' ? View : Sort" />
+            <Back v-if="isCreating" />
+            <Close v-else />
           </el-icon>
-          <span>{{ modeToggleText }}</span>
+        </button>
+        <button
+          v-if="!isCreating"
+          type="button"
+          class="category-settings-header__add"
+          aria-label="新增分类"
+          title="新增分类"
+          :disabled="saving || editorOpen || dragBusy"
+          @click="openCreate"
+        >
+          <el-icon aria-hidden="true"><Plus /></el-icon>
         </button>
       </div>
     </template>
 
-    <div class="category-settings" :class="`category-settings--${mode}`">
-      <p class="category-settings__lead">
-        拖动分类图标可调整{{ kindLabel }}记账时的候选顺序。主网格只显示当前显示的分类。
-      </p>
+    <div class="category-settings" :class="{ 'is-creating': isCreating }">
 
-      <div class="category-settings__notice" role="note">
-        <el-icon class="category-settings__notice-icon"><Lock /></el-icon>
-        <span>
-          设置仅保存在本机当前家庭账号下，不会同步到其他设备。隐藏分类只会从候选里移出，不会删除历史账目，也不会修改历史分类。
-        </span>
-      </div>
+      <el-alert
+        v-if="isCreating && errorMessage"
+        class="category-save-error category-create-error"
+        :title="errorMessage"
+        type="error"
+        :closable="false"
+        show-icon
+      />
 
-      <template v-if="mode === 'sort'">
-        <div class="category-sort-toolbar">
-          <span class="category-visible-count">
-            显示 {{ visibleCount }} 个<span v-if="hiddenCount > 0">
-              · 隐藏 {{ hiddenCount }} 个
-            </span>
-          </span>
-          <p :id="SORT_HINT_ID" class="category-sort-hint">
-            按住图标右上角的手柄拖动排序；键盘聚焦分类后可用方向键调整顺序。
-          </p>
-        </div>
-
-        <div ref="gridScrollRef" class="category-sort-scroll">
-          <TransitionGroup
-            v-if="visibleEntries.length > 0"
-            ref="gridGroupRef"
-            tag="div"
-            name="category-sort"
-            class="category-sort-grid"
-            role="list"
-            aria-label="显示中的分类，可拖动排序"
-          >
-            <div
-              v-for="(entry, index) in visibleEntries"
-              :key="entry.name"
-              class="category-sort-tile"
-              :class="{ 'is-dragging': dragName === entry.name }"
-              role="listitem"
-              :data-category-sort-name="entry.name"
-              @pointerdown="beginTileDrag($event, entry.name)"
-            >
-              <button
-                type="button"
-                class="category-sort-tile__main"
-                :disabled="saving"
-                :aria-label="`${entry.name}，显示顺序第 ${index + 1} 位。使用方向键调整顺序`"
-                :aria-describedby="SORT_HINT_ID"
-                @keydown="handleTileKeydown($event, entry.name)"
-              >
-                <span class="category-sort-tile__icon" aria-hidden="true">
-                  <el-icon><component :is="categoryIcon(entry.name)" /></el-icon>
-                </span>
-                <span class="category-sort-tile__name" :title="entry.name">
-                  {{ entry.name }}
-                </span>
-              </button>
-              <button
-                type="button"
-                class="category-sort-tile__grip"
-                :aria-label="`拖动分类${entry.name}排序`"
-                title="按住拖动排序"
-                tabindex="-1"
-                :disabled="saving"
-                :data-category-sort-handle="entry.name"
-                @pointerdown="beginDrag($event, entry.name)"
-                @contextmenu="suppressContextMenu"
-              >
-                <el-icon><Rank /></el-icon>
-              </button>
-            </div>
-          </TransitionGroup>
-
-          <div v-else class="category-sort-empty" role="status">
-            <p>没有显示中的分类。</p>
-            <el-button
-              class="category-sort-empty-action"
-              type="primary"
-              plain
-              :disabled="saving"
-              @click="toggleMode"
-            >
-              去显示/隐藏中开启
-            </el-button>
-          </div>
-        </div>
-      </template>
-
-      <template v-else>
-        <section class="category-add-block" aria-labelledby="category-add-title">
-          <div class="category-add-head">
-            <span id="category-add-title">新增自定义分类</span>
-            <span>最多 {{ MAX_CATEGORY_LENGTH }} 个字符</span>
-          </div>
-          <div class="category-add">
-            <el-input
-              v-model="newCategory"
-              class="category-name-input"
-              size="large"
-              clearable
-              placeholder="输入新的分类名称"
-              aria-label="新分类名称"
-              @input="clearErrors"
-              @keydown.enter="handleAddKeydown"
-            />
-            <el-button
-              class="category-add-button"
-              type="primary"
-              plain
-              size="large"
-              :disabled="saving"
-              @click="addCategory"
-            >
-              添加
-            </el-button>
-          </div>
-          <p v-if="addError" class="category-add-error" role="alert">
-            {{ addError }}
-          </p>
+      <div
+        class="category-workspace"
+        :class="{
+          'has-editor': editorMode === 'edit',
+          'is-creating': isCreating,
+        }"
+      >
+        <section
+          v-if="editorOpen"
+          class="category-editor-panel"
+          aria-label="分类编辑区"
+        >
+          <CategoryEditor
+            :key="editorKey"
+            :kind="kind"
+            :entry="editorMode === 'edit' ? editingEntry : undefined"
+            :existing-names="draftNames"
+            :disabled="saving"
+            :fullscreen="isCreating"
+            @apply="applyEditorEntry"
+            @cancel="cancelEditor"
+          />
         </section>
 
-        <div class="category-manage-head">
-          <span class="category-visible-count">
-            全部 {{ draft.length }} 个分类，显示 {{ visibleCount }} 个
-          </span>
-          <span>隐藏分类不会删除历史账目</span>
-        </div>
+        <div v-show="!isCreating" class="category-list-column">
+          <div ref="gridScrollRef" class="category-sort-scroll">
+            <TransitionGroup
+              v-if="visibleEntries.length > 0"
+              ref="gridGroupRef"
+              tag="div"
+              name="category-sort"
+              class="category-sort-grid"
+              role="list"
+              aria-label="显示中的分类，可拖动排序"
+            >
+              <div
+                v-for="(entry, index) in visibleEntries"
+                :key="entry.name"
+                class="category-sort-tile"
+                :class="{ 'is-dragging': dragName === entry.name }"
+                role="listitem"
+                :data-category-sort-name="entry.name"
+                :data-category-card-name="entry.name"
+                @pointerdown="beginTileDrag($event, entry.name)"
+              >
+                <button
+                  type="button"
+                  class="category-sort-tile__main"
+                  :disabled="saving"
+                  :aria-label="`${entry.name}，显示顺序第 ${index + 1} 位。使用方向键调整顺序`"
+                  @keydown="handleCardKeydown($event, entry.name)"
+                >
+                  <span class="category-sort-tile__icon" aria-hidden="true">
+                    <el-icon><component :is="categoryIcon(entry.name, entry.icon)" /></el-icon>
+                  </span>
+                  <span class="category-sort-tile__name" :title="entry.name">
+                    {{ entry.name }}
+                  </span>
+                </button>
 
-        <ul
-          ref="manageListRef"
-          class="category-manage-list"
-          aria-label="全部已添加分类的显示设置"
-        >
-          <li
-            v-for="entry in draft"
-            :key="entry.name"
-            class="category-manage-row"
-            :class="{ 'is-hidden': !entry.visible }"
-            :data-category-manage-name="entry.name"
-          >
-            <span class="category-manage-row__icon" aria-hidden="true">
-              <el-icon><component :is="categoryIcon(entry.name)" /></el-icon>
-            </span>
-            <span class="category-manage-row__copy">
-              <span class="category-manage-row__name" :title="entry.name">
-                {{ entry.name }}
-              </span>
-              <span class="category-manage-row__state">
-                {{ entry.visible ? '显示在记账页' : '已隐藏，历史账目不受影响' }}
-              </span>
-            </span>
-            <el-switch
-              v-model="entry.visible"
-              class="category-visibility-switch"
-              size="large"
-              inline-prompt
-              active-text="显示"
-              inactive-text="隐藏"
-              :disabled="saving"
-              :aria-label="`${entry.name}显示状态`"
-              @change="handleVisibilityChange(entry)"
-            />
-          </li>
-        </ul>
-      </template>
+                <label
+                  class="category-sort-tile__toggle"
+                  @pointerdown.stop
+                >
+                  <input
+                    v-model="entry.visible"
+                    class="category-sort-tile__checkbox"
+                    type="checkbox"
+                    :disabled="saving || dragBusy"
+                    :aria-label="`${entry.name}显示状态`"
+                    @change="handleVisibilityChange(entry)"
+                  />
+                  <span>{{ entry.visible ? '显示' : '隐藏' }}</span>
+                </label>
+
+                <div
+                  class="category-sort-tile__actions"
+                  @pointerdown.stop
+                >
+                  <button
+                    type="button"
+                    class="category-sort-tile__action"
+                    :disabled="saving || editorOpen || dragBusy"
+                    :aria-label="`编辑分类${entry.name}`"
+                    @click="openEdit(entry.name)"
+                  >
+                    编辑
+                  </button>
+                  <button
+                    type="button"
+                    class="category-sort-tile__action"
+                    :disabled="saving || dragBusy || !canMoveEntry(entry, -1)"
+                    :aria-label="`将分类${entry.name}前移`"
+                    @click="moveEntryBy(entry.name, -1)"
+                  >
+                    前移
+                  </button>
+                  <button
+                    type="button"
+                    class="category-sort-tile__action"
+                    :disabled="saving || dragBusy || !canMoveEntry(entry, 1)"
+                    :aria-label="`将分类${entry.name}后移`"
+                    @click="moveEntryBy(entry.name, 1)"
+                  >
+                    后移
+                  </button>
+                </div>
+
+                <button
+                  type="button"
+                  class="category-sort-tile__grip"
+                  :aria-label="`拖动分类${entry.name}排序`"
+                  title="按住拖动排序"
+                  tabindex="-1"
+                  :disabled="saving || editorOpen"
+                  @pointerdown="beginDrag($event, entry.name)"
+                  @contextmenu="suppressContextMenu"
+                >
+                  <el-icon><Rank /></el-icon>
+                </button>
+              </div>
+            </TransitionGroup>
+
+            <div v-else class="category-sort-empty" role="status">
+              <p>没有显示中的分类。请在下方卡片上勾选“显示”，至少保留一个。</p>
+            </div>
+
+            <template v-if="hiddenEntries.length > 0">
+              <p class="category-hidden-heading">
+                已隐藏 {{ hiddenCount }} 个分类，排在显示分类之后
+              </p>
+              <TransitionGroup
+                tag="div"
+                name="category-sort"
+                class="category-hidden-grid"
+                role="list"
+                aria-label="已隐藏的分类，可调整隐藏顺序"
+              >
+                <div
+                  v-for="(entry, index) in hiddenEntries"
+                  :key="entry.name"
+                  class="category-sort-tile is-hidden"
+                  role="listitem"
+                  :data-category-card-name="entry.name"
+                >
+                  <button
+                    type="button"
+                    class="category-sort-tile__main"
+                    :disabled="saving"
+                    :aria-label="`${entry.name}，隐藏顺序第 ${index + 1} 位。使用方向键调整顺序`"
+                    :aria-describedby="HIDDEN_HINT_ID"
+                    @keydown="handleCardKeydown($event, entry.name)"
+                  >
+                    <span class="category-sort-tile__icon" aria-hidden="true">
+                      <el-icon><component :is="categoryIcon(entry.name, entry.icon)" /></el-icon>
+                    </span>
+                    <span class="category-sort-tile__name" :title="entry.name">
+                      {{ entry.name }}
+                    </span>
+                  </button>
+
+                  <label
+                    class="category-sort-tile__toggle"
+                    @pointerdown.stop
+                  >
+                    <input
+                      v-model="entry.visible"
+                      class="category-sort-tile__checkbox"
+                      type="checkbox"
+                      :disabled="saving || dragBusy"
+                      :aria-label="`${entry.name}显示状态`"
+                      @change="handleVisibilityChange(entry)"
+                    />
+                    <span>{{ entry.visible ? '显示' : '隐藏' }}</span>
+                  </label>
+
+                  <div
+                    class="category-sort-tile__actions"
+                    @pointerdown.stop
+                  >
+                    <button
+                      type="button"
+                      class="category-sort-tile__action"
+                      :disabled="saving || editorOpen || dragBusy"
+                      :aria-label="`编辑分类${entry.name}`"
+                      @click="openEdit(entry.name)"
+                    >
+                      编辑
+                    </button>
+                    <button
+                      type="button"
+                      class="category-sort-tile__action"
+                      :disabled="saving || dragBusy || !canMoveEntry(entry, -1)"
+                      :aria-label="`将分类${entry.name}前移`"
+                      @click="moveEntryBy(entry.name, -1)"
+                    >
+                      前移
+                    </button>
+                    <button
+                      type="button"
+                      class="category-sort-tile__action"
+                      :disabled="saving || dragBusy || !canMoveEntry(entry, 1)"
+                      :aria-label="`将分类${entry.name}后移`"
+                      @click="moveEntryBy(entry.name, 1)"
+                    >
+                      后移
+                    </button>
+                  </div>
+                </div>
+              </TransitionGroup>
+              <p :id="HIDDEN_HINT_ID" class="category-hidden-hint">
+                隐藏分类不会出现在记账候选中，也不能拖动；可用前移、后移调整隐藏组内的相对顺序。
+              </p>
+            </template>
+          </div>
+        </div>
+      </div>
 
       <p class="sr-only" aria-live="polite">{{ liveMessage }}</p>
     </div>
 
-    <template #footer>
+    <template v-if="!isCreating" #footer>
       <div class="category-settings-footer">
         <el-alert
           v-if="errorMessage"
@@ -848,11 +1105,15 @@ function submit(): void {
           <p
             class="category-settings-footer__status"
             :class="{
-              'is-warning': visibleCount === 0,
+              'is-warning': editorOpen || visibleCount === 0,
               'is-dragging': dragName !== null,
             }"
           >
-            <template v-if="dragName">
+            <template v-if="saving">正在保存分类设置…</template>
+            <template v-else-if="editorOpen">
+              请先应用或取消正在编辑的分类，再保存设置
+            </template>
+            <template v-else-if="dragName">
               正在拖动「{{ dragName }}」，松手放到新位置
             </template>
             <template v-else-if="visibleCount === 0">
@@ -876,7 +1137,7 @@ function submit(): void {
               class="category-save-button"
               type="primary"
               :loading="saving"
-              :disabled="dragName !== null"
+              :disabled="dragBusy || editorOpen"
               @click="submit"
             >
               保存设置
@@ -922,6 +1183,10 @@ function submit(): void {
   overflow: hidden;
 }
 
+:global(.el-dialog.category-settings-dialog.is-creating .el-dialog__body) {
+  padding-bottom: calc(16px + env(safe-area-inset-bottom, 0px));
+}
+
 :global(.el-dialog.category-settings-dialog.is-fullscreen .el-dialog__footer) {
   flex: 0 0 auto;
   padding: 12px calc(20px + env(safe-area-inset-right, 0px))
@@ -937,11 +1202,16 @@ function submit(): void {
   gap: 12px;
   align-items: center;
   width: 100%;
-  max-width: 980px;
+  max-width: 1180px;
   margin: 0 auto;
 }
 
-.category-settings-header__close {
+.category-settings-header.is-creating {
+  max-width: none;
+}
+
+.category-settings-header__close,
+.category-settings-header__add {
   display: flex;
   flex: 0 0 auto;
   align-items: center;
@@ -958,139 +1228,91 @@ function submit(): void {
   -webkit-tap-highlight-color: transparent;
 }
 
-.category-settings-header__close:hover:not(:disabled) {
+.category-settings-header__close:hover:not(:disabled),
+.category-settings-header__add:hover:not(:disabled) {
   color: var(--hb-ink);
   border-color: var(--hb-line-strong);
 }
 
-.category-settings-header__close:disabled {
+.category-settings-header__close:disabled,
+.category-settings-header__add:disabled {
   cursor: not-allowed;
   opacity: 0.5;
 }
 
-.category-settings-header__heading {
-  display: flex;
-  flex: 1 1 auto;
-  flex-direction: column;
-  gap: 2px;
-  min-width: 0;
-}
-
-.category-settings-header__title {
-  overflow: hidden;
-  color: var(--hb-ink);
-  font-size: 19px;
-  font-weight: 600;
-  line-height: 1.25;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.category-settings-header__subtitle {
-  overflow: hidden;
-  color: var(--hb-ink-faint);
-  font-size: 11.5px;
-  line-height: 1.4;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.category-settings-header__mode {
-  display: inline-flex;
-  flex: 0 0 auto;
-  gap: 7px;
-  align-items: center;
-  justify-content: center;
-  min-height: 40px;
-  padding: 0 14px;
-  color: var(--hb-teal);
-  font: inherit;
-  font-size: 13px;
-  font-weight: 600;
-  cursor: pointer;
+.category-settings-header__add {
+  margin-left: auto;
+  color: var(--hb-teal-dark);
   background: var(--hb-teal-faint);
-  border: 1px solid var(--hb-teal-soft);
-  border-radius: 999px;
-  -webkit-tap-highlight-color: transparent;
-  transition:
-    color 0.16s ease,
-    background-color 0.16s ease,
-    border-color 0.16s ease;
+  border-color: var(--hb-teal-soft);
 }
 
-.category-settings-header__mode:hover:not(:disabled) {
-  color: #fff;
-  background: var(--hb-teal);
+.category-settings-header__add:hover:not(:disabled) {
+  color: var(--hb-teal-dark);
   border-color: var(--hb-teal);
 }
 
-.category-settings-header__mode:disabled {
-  cursor: not-allowed;
-  opacity: 0.55;
+.category-settings-header__add:focus-visible {
+  outline: 2px solid var(--hb-teal);
+  outline-offset: 2px;
 }
+
 
 .category-settings {
   display: flex;
   flex: 1 1 auto;
   flex-direction: column;
   width: 100%;
-  max-width: 980px;
+  max-width: 1180px;
   min-height: 0;
   margin: 0 auto;
 }
 
-.category-settings__lead {
-  flex: 0 0 auto;
-  margin: 0 0 12px;
-  color: var(--hb-ink-soft);
-  font-size: 12.5px;
-  line-height: 1.7;
+.category-settings.is-creating {
+  max-width: none;
 }
 
-.category-settings__notice {
+
+.category-workspace {
+  display: grid;
+  flex: 1 1 auto;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+  gap: 14px;
+  min-height: 0;
+}
+
+.category-workspace.has-editor {
+  grid-template-rows: minmax(0, 42vh) minmax(0, 1fr);
+}
+
+.category-workspace.is-creating {
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+}
+
+.category-editor-panel {
+  min-width: 0;
+  min-height: 0;
+  padding: 14px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  background: var(--hb-surface-raised);
+  border: 1px solid var(--hb-line);
+  border-radius: 18px;
+  scrollbar-gutter: stable;
+}
+
+.category-list-column {
   display: flex;
-  flex: 0 0 auto;
-  gap: 8px;
-  align-items: flex-start;
-  margin-bottom: 14px;
-  padding: 10px 12px;
-  color: var(--hb-ink-faint);
-  font-size: 11.5px;
-  line-height: 1.7;
-  background: var(--hb-teal-faint);
-  border: 1px solid var(--hb-teal-soft);
-  border-radius: var(--hb-radius-sm);
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
 }
 
-.category-settings__notice-icon {
-  flex: 0 0 auto;
-  margin-top: 2px;
-  color: var(--hb-teal);
-}
 
-.category-sort-toolbar {
-  display: flex;
-  flex: 0 0 auto;
-  flex-wrap: wrap;
-  gap: 4px 16px;
-  align-items: baseline;
-  justify-content: space-between;
-  margin-bottom: 8px;
-  color: var(--hb-ink-faint);
-  font-size: 11.5px;
-}
 
-.category-visible-count {
-  color: var(--hb-ink-soft);
-  font-weight: 500;
-}
 
-.category-sort-hint {
-  max-width: 560px;
-  margin: 0;
-  line-height: 1.6;
-  text-align: right;
-}
 
 .category-sort-scroll {
   flex: 1 1 auto;
@@ -1102,19 +1324,23 @@ function submit(): void {
   scrollbar-gutter: stable;
 }
 
-.category-sort-grid {
+.category-sort-grid,
+.category-hidden-grid {
   position: relative;
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(100px, 1fr));
-  gap: 12px;
+  grid-template-columns: repeat(auto-fill, minmax(118px, 1fr));
+  gap: 10px;
   padding: 2px;
 }
 
 .category-sort-tile {
   position: relative;
   display: flex;
+  flex-direction: column;
+  gap: 6px;
   min-width: 0;
-  min-height: 104px;
+  min-height: 168px;
+  padding: 10px 8px 8px;
   background: var(--hb-bg);
   border: 1px solid var(--hb-line);
   border-radius: 16px;
@@ -1130,8 +1356,9 @@ function submit(): void {
   border-color: var(--hb-line-strong);
 }
 
-.category-sort-tile.is-dragging .category-sort-tile__main {
-  cursor: grabbing;
+.category-sort-tile.is-hidden {
+  background: var(--hb-surface);
+  border-style: dashed;
 }
 
 .category-sort-tile.is-dragging {
@@ -1155,11 +1382,12 @@ function submit(): void {
   display: flex;
   flex: 1 1 auto;
   flex-direction: column;
-  gap: 8px;
+  gap: 6px;
   align-items: center;
   justify-content: center;
   min-width: 0;
-  padding: 22px 8px 12px;
+  min-height: 62px;
+  padding: 16px 2px 6px;
   color: var(--hb-ink-soft);
   font: inherit;
   font-size: 12.5px;
@@ -1167,9 +1395,13 @@ function submit(): void {
   cursor: grab;
   background: transparent;
   border: 0;
-  border-radius: inherit;
+  border-radius: 10px;
   appearance: none;
   -webkit-tap-highlight-color: transparent;
+}
+
+.category-sort-tile.is-hidden .category-sort-tile__main {
+  cursor: default;
 }
 
 .category-sort-tile__main:focus-visible {
@@ -1189,8 +1421,12 @@ function submit(): void {
   color: var(--hb-teal);
 }
 
+.category-sort-tile.is-hidden .category-sort-tile__icon {
+  color: var(--hb-ink-faint);
+}
+
 .category-sort-tile__icon :deep(.el-icon) {
-  font-size: 28px;
+  font-size: 26px;
 }
 
 .category-sort-tile__name {
@@ -1200,18 +1436,88 @@ function submit(): void {
   white-space: nowrap;
 }
 
+.category-sort-tile__toggle {
+  display: inline-flex;
+  gap: 5px;
+  align-items: center;
+  justify-content: center;
+  min-height: 24px;
+  color: var(--hb-ink-faint);
+  font-size: 10.5px;
+  line-height: 1;
+  cursor: pointer;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.category-sort-tile__checkbox {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  accent-color: var(--hb-teal);
+  cursor: pointer;
+}
+
+.category-sort-tile__checkbox:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.category-sort-tile:has(.category-sort-tile__checkbox:focus-visible) {
+  outline: 2px solid var(--hb-teal);
+  outline-offset: 2px;
+}
+
+.category-sort-tile__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+  justify-content: center;
+  margin-top: auto;
+}
+
+.category-sort-tile__action {
+  min-height: 24px;
+  padding: 0 5px;
+  color: var(--hb-ink-soft);
+  font: inherit;
+  font-size: 10.5px;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+  background: var(--hb-surface);
+  border: 1px solid var(--hb-line);
+  border-radius: 7px;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.category-sort-tile__action:hover:not(:disabled) {
+  color: var(--hb-teal-dark);
+  border-color: var(--hb-teal);
+}
+
+.category-sort-tile__action:focus-visible {
+  outline: 2px solid var(--hb-teal);
+  outline-offset: 1px;
+}
+
+.category-sort-tile__action:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
 .category-sort-tile__grip {
   position: absolute;
-  top: 6px;
-  right: 6px;
+  top: 3px;
+  right: 3px;
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 34px;
-  height: 34px;
+  width: 30px;
+  height: 30px;
   padding: 0;
   color: var(--hb-ink-faint);
-  font-size: 16px;
+  font-size: 15px;
   cursor: grab;
   touch-action: none;
   -webkit-user-select: none;
@@ -1219,7 +1525,7 @@ function submit(): void {
   -webkit-touch-callout: none;
   background: transparent;
   border: 1px solid transparent;
-  border-radius: 9px;
+  border-radius: 8px;
   -webkit-tap-highlight-color: transparent;
 }
 
@@ -1242,189 +1548,50 @@ function submit(): void {
 
 .category-sort-empty {
   display: flex;
-  flex-direction: column;
-  gap: 12px;
   align-items: center;
   justify-content: center;
-  min-height: 220px;
+  min-height: 160px;
   color: var(--hb-ink-faint);
   font-size: 13px;
   text-align: center;
 }
 
 .category-sort-empty p {
+  max-width: 420px;
   margin: 0;
+  line-height: 1.7;
 }
 
-.category-settings--manage {
-  min-height: 0;
-}
-
-.category-add-block {
-  flex: 0 0 auto;
-  margin-bottom: 4px;
-}
-
-.category-add-head {
-  display: flex;
-  gap: 12px;
-  align-items: baseline;
-  justify-content: space-between;
-  margin-bottom: 6px;
+.category-hidden-heading {
+  margin: 16px 0 8px;
+  padding-top: 12px;
   color: var(--hb-ink-soft);
-  font-size: 12px;
-  font-weight: 500;
-}
-
-.category-add-head span:last-child {
-  flex: 0 0 auto;
-  color: var(--hb-ink-faint);
-  font-size: 11px;
-  font-weight: 400;
-}
-
-.category-add {
-  display: flex;
-  gap: 8px;
-}
-
-.category-add .el-input {
-  flex: 1;
-  min-width: 0;
-}
-
-.category-add .el-button {
-  flex: 0 0 auto;
-  min-height: 40px;
-}
-
-.category-add-error {
-  margin-top: 6px;
-  color: var(--hb-danger);
-  font-size: 12px;
-}
-
-.category-manage-head {
-  display: flex;
-  flex: 0 0 auto;
-  flex-wrap: wrap;
-  gap: 4px 12px;
-  align-items: baseline;
-  justify-content: space-between;
-  margin: 14px 0 8px;
-  color: var(--hb-ink-faint);
   font-size: 11.5px;
-}
-
-.category-manage-list {
-  flex: 1 1 auto;
-  min-height: 0;
-  margin: 0;
-  padding: 0 2px 18px;
-  overflow-y: auto;
-  overscroll-behavior: contain;
-  list-style: none;
-}
-
-.category-manage-row {
-  display: flex;
-  gap: 12px;
-  align-items: center;
-  min-height: 62px;
-  margin-bottom: 8px;
-  padding: 10px 12px;
-  background: var(--hb-surface-raised);
-  border: 1px solid var(--hb-line);
-  border-radius: 14px;
-  transition:
-    opacity 0.16s ease,
-    background-color 0.16s ease;
-}
-
-.category-manage-row:last-child {
-  margin-bottom: 0;
-}
-
-.category-manage-row.is-hidden {
-  background: var(--hb-bg);
-  opacity: 0.78;
-}
-
-.category-manage-row__icon {
-  display: flex;
-  flex: 0 0 auto;
-  align-items: center;
-  justify-content: center;
-  width: 40px;
-  height: 40px;
-  color: var(--hb-teal);
-  background: var(--hb-bg);
-  border: 1px solid var(--hb-line);
-  border-radius: 11px;
-}
-
-.category-manage-row__icon :deep(.el-icon) {
-  font-size: 20px;
-}
-
-.category-manage-row.is-hidden .category-manage-row__icon {
-  color: var(--hb-ink-faint);
-}
-
-.category-manage-row__copy {
-  display: flex;
-  flex: 1 1 auto;
-  flex-direction: column;
-  gap: 2px;
-  min-width: 0;
-}
-
-.category-manage-row__name {
-  overflow: hidden;
-  color: var(--hb-ink);
-  font-size: 13.5px;
   font-weight: 500;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  line-height: 1.6;
+  border-top: 1px dashed var(--hb-line);
 }
 
-.category-manage-row__state {
-  overflow: hidden;
+.category-hidden-hint {
+  margin: 8px 0 0;
   color: var(--hb-ink-faint);
   font-size: 11px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.category-manage-row :deep(.el-switch) {
-  flex: 0 0 auto;
-}
-
-.category-manage-row :deep(.el-switch__core) {
-  min-width: 58px;
-  height: 26px;
-  border-radius: 13px;
-}
-
-.category-manage-row :deep(.el-switch__core .el-switch__inner) {
-  height: 22px;
-  padding: 0 6px 0 22px;
-}
-
-.category-manage-row :deep(.el-switch__action) {
-  width: 22px;
-  height: 22px;
+  line-height: 1.6;
 }
 
 .category-settings-footer {
   width: 100%;
-  max-width: 980px;
+  max-width: 1180px;
   margin: 0 auto;
 }
 
 .category-save-error {
   margin-bottom: 10px;
   text-align: left;
+}
+
+.category-create-error {
+  flex: 0 0 auto;
 }
 
 .category-settings-footer__row {
@@ -1455,6 +1622,21 @@ function submit(): void {
   flex: 0 0 auto;
 }
 
+@media (min-width: 900px) {
+  .category-workspace,
+  .category-workspace.has-editor {
+    grid-template-rows: minmax(0, 1fr);
+  }
+
+  .category-workspace {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .category-workspace.has-editor {
+    grid-template-columns: minmax(300px, 380px) minmax(0, 1fr);
+  }
+}
+
 @media (max-width: 640px) {
   :global(.el-dialog.category-settings-dialog.is-fullscreen .el-dialog__header) {
     padding: calc(8px + env(safe-area-inset-top, 0px))
@@ -1467,58 +1649,54 @@ function submit(): void {
       calc(12px + env(safe-area-inset-left, 0px));
   }
 
+  :global(.el-dialog.category-settings-dialog.is-creating .el-dialog__body) {
+    padding-bottom: calc(10px + env(safe-area-inset-bottom, 0px));
+  }
+
   :global(.el-dialog.category-settings-dialog.is-fullscreen .el-dialog__footer) {
     padding: 10px calc(12px + env(safe-area-inset-right, 0px))
       calc(10px + env(safe-area-inset-bottom, 0px))
       calc(12px + env(safe-area-inset-left, 0px));
   }
 
-  .category-settings-header {
-    gap: 8px;
-  }
 
-  .category-settings-header__close {
+  .category-settings-header__close,
+  .category-settings-header__add {
     width: 38px;
     height: 38px;
   }
 
-  .category-settings-header__mode {
-    min-height: 38px;
-    padding: 0 11px;
-    font-size: 12px;
+
+  .category-workspace {
+    gap: 10px;
   }
 
-  .category-settings__lead {
-    margin-bottom: 8px;
-    font-size: 12px;
-    line-height: 1.6;
+  .category-workspace.has-editor {
+    grid-template-rows: minmax(0, 44vh) minmax(0, 1fr);
   }
 
-  .category-settings__notice {
-    margin-bottom: 10px;
-    padding: 8px 10px;
-    font-size: 11px;
-    line-height: 1.6;
+  .category-editor-panel {
+    padding: 12px;
+    border-radius: 14px;
   }
 
-  .category-sort-hint {
-    max-width: none;
-    text-align: left;
-  }
-
-  .category-sort-grid {
-    grid-template-columns: repeat(auto-fill, minmax(82px, 1fr));
+  .category-sort-grid,
+  .category-hidden-grid {
+    grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
     gap: 8px;
   }
 
   .category-sort-tile {
-    min-height: 92px;
+    gap: 5px;
+    min-height: 156px;
+    padding: 8px 5px 6px;
     border-radius: 14px;
   }
 
   .category-sort-tile__main {
-    gap: 6px;
-    padding: 18px 4px 9px;
+    gap: 5px;
+    min-height: 58px;
+    padding: 14px 2px 4px;
     font-size: 11.5px;
   }
 
@@ -1526,17 +1704,30 @@ function submit(): void {
     font-size: 24px;
   }
 
-  .category-sort-tile__grip {
-    top: 2px;
-    right: 2px;
-    width: 32px;
-    height: 32px;
+  .category-sort-tile__toggle {
+    font-size: 10px;
   }
 
-  .category-manage-row {
-    gap: 9px;
-    min-height: 58px;
-    padding: 8px 10px;
+  .category-sort-tile__checkbox {
+    width: 15px;
+    height: 15px;
+  }
+
+  .category-sort-tile__actions {
+    gap: 2px;
+  }
+
+  .category-sort-tile__action {
+    min-height: 23px;
+    padding: 0 4px;
+    font-size: 10px;
+  }
+
+  .category-sort-tile__grip {
+    top: 1px;
+    right: 1px;
+    width: 28px;
+    height: 28px;
   }
 
   .category-settings-footer__row {

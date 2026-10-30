@@ -10,14 +10,18 @@ import (
 	"household-bills/backend/internal/store"
 )
 
+const accountOwnerErrorMessage = "账户归属成员不存在。"
+
 type accountCreateRequest struct {
 	Name           string          `json:"name"`
 	OpeningBalance json.RawMessage `json:"opening_balance"`
+	Owner          json.RawMessage `json:"owner"`
 }
 
 type accountPatchRequest struct {
 	Name           *string         `json:"name"`
 	OpeningBalance json.RawMessage `json:"opening_balance"`
+	Owner          json.RawMessage `json:"owner"`
 }
 
 func (a *API) handleListAccounts(c *gin.Context) {
@@ -65,13 +69,22 @@ func (a *API) handleCreateAccount(c *gin.Context) {
 			openingBalance = parsed
 		}
 	}
+
+	ownerID, _, ownerOK := parseOwnerRaw(request.Owner)
+	if !ownerOK {
+		fields["owner"] = []string{accountOwnerErrorMessage}
+	}
 	if len(fields) > 0 {
 		abortFields(c, fields)
 		return
 	}
 
 	account, err := a.store.CreateAccount(
-		c.Request.Context(), auth.User.HouseholdID, name, openingBalance)
+		c.Request.Context(), auth.User.HouseholdID, name, openingBalance, ownerID)
+	if errors.Is(err, store.ErrInvalidOwner) {
+		abortFields(c, map[string][]string{"owner": {accountOwnerErrorMessage}})
+		return
+	}
 	if err != nil {
 		a.logger.Printf("创建账户失败: %v", err)
 		abortDetail(c, http.StatusInternalServerError, "服务器内部错误。")
@@ -115,6 +128,14 @@ func (a *API) handlePatchAccount(c *gin.Context) {
 			update.OpeningBalance = &openingBalance
 		}
 	}
+
+	ownerID, ownerSet, ownerOK := parseOwnerRaw(request.Owner)
+	if !ownerOK {
+		fields["owner"] = []string{accountOwnerErrorMessage}
+	} else if ownerSet {
+		update.OwnerID = ownerID
+		update.OwnerSet = true
+	}
 	if len(fields) > 0 {
 		abortFields(c, fields)
 		return
@@ -122,6 +143,10 @@ func (a *API) handlePatchAccount(c *gin.Context) {
 
 	account, err := a.store.UpdateAccount(
 		c.Request.Context(), auth.User.HouseholdID, accountID, update)
+	if errors.Is(err, store.ErrInvalidOwner) {
+		abortFields(c, map[string][]string{"owner": {accountOwnerErrorMessage}})
+		return
+	}
 	if errors.Is(err, store.ErrNotFound) {
 		abortDetail(c, http.StatusNotFound, "未找到该账户。")
 		return

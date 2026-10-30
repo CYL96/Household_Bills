@@ -24,7 +24,7 @@ func (s *Store) FindUserByUsername(ctx context.Context, username string) (User, 
 		SELECT u.id, u.username, u.is_admin, u.password_hash, h.id, h.name
 		FROM users u
 		JOIN households h ON h.id = u.household_id
-		WHERE u.username = $1`, username).
+		WHERE u.username = $1 AND u.deleted_at IS NULL`, username).
 		Scan(&user.ID, &user.Username, &user.IsAdmin, &passwordHash,
 			&user.HouseholdID, &user.HouseholdName)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -45,7 +45,8 @@ func (s *Store) SessionUser(ctx context.Context, tokenHash []byte) (User, bool, 
 		FROM sessions s
 		JOIN users u ON u.id = s.user_id
 		JOIN households h ON h.id = u.household_id
-		WHERE s.token_hash = $1 AND s.expires_at > now()`, tokenHash).
+		WHERE s.token_hash = $1 AND s.expires_at > now()
+		  AND u.deleted_at IS NULL`, tokenHash).
 		Scan(&user.ID, &user.Username, &user.IsAdmin,
 			&user.HouseholdID, &user.HouseholdName)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -79,7 +80,7 @@ func (s *Store) CreateSession(
 
 	var currentPasswordHash string
 	err = tx.QueryRow(ctx,
-		"SELECT password_hash FROM users WHERE id = $1 FOR UPDATE", userID).
+		"SELECT password_hash FROM users WHERE id = $1 AND deleted_at IS NULL FOR UPDATE", userID).
 		Scan(&currentPasswordHash)
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
@@ -117,12 +118,12 @@ func (s *Store) Me(ctx context.Context, userID int64) (Me, error) {
 func loadMe(ctx context.Context, q dbQuerier, userID int64) (Me, error) {
 	var me Me
 	err := q.QueryRow(ctx, `
-		SELECT u.id, u.username, u.is_admin, h.id, h.name
+		SELECT u.id, u.username, u.nickname, u.is_admin, u.avatar_version, h.id, h.name
 		FROM users u
 		JOIN households h ON h.id = u.household_id
-		WHERE u.id = $1`, userID).
-		Scan(&me.User.ID, &me.User.Username, &me.User.IsAdmin,
-			&me.Household.ID, &me.Household.Name)
+		WHERE u.id = $1 AND u.deleted_at IS NULL`, userID).
+		Scan(&me.User.ID, &me.User.Username, &me.User.Nickname, &me.User.IsAdmin,
+			&me.User.AvatarVersion, &me.Household.ID, &me.Household.Name)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Me{}, ErrNotFound
 	}
@@ -132,9 +133,9 @@ func loadMe(ctx context.Context, q dbQuerier, userID int64) (Me, error) {
 
 	members := make([]UserRef, 0)
 	rows, err := q.Query(ctx, `
-		SELECT id, username, is_admin
+		SELECT id, username, nickname, is_admin, avatar_version
 		FROM users
-		WHERE household_id = $1
+		WHERE household_id = $1 AND deleted_at IS NULL
 		ORDER BY id`, me.Household.ID)
 	if err != nil {
 		return Me{}, fmt.Errorf("读取家庭成员失败: %w", err)
@@ -142,7 +143,9 @@ func loadMe(ctx context.Context, q dbQuerier, userID int64) (Me, error) {
 	defer rows.Close()
 	for rows.Next() {
 		var member UserRef
-		if err := rows.Scan(&member.ID, &member.Username, &member.IsAdmin); err != nil {
+		if err := rows.Scan(
+			&member.ID, &member.Username, &member.Nickname, &member.IsAdmin,
+			&member.AvatarVersion); err != nil {
 			return Me{}, fmt.Errorf("读取家庭成员失败: %w", err)
 		}
 		members = append(members, member)

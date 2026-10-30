@@ -13,7 +13,7 @@ export class ApiError extends Error {
   }
 }
 
-type RequestMethod = 'GET' | 'POST' | 'PATCH' | 'DELETE'
+type RequestMethod = 'GET' | 'POST' | 'PATCH' | 'PUT' | 'DELETE'
 
 interface RequestOptions {
   method?: RequestMethod
@@ -34,9 +34,11 @@ function notifyUnauthorized(): void {
 
 const FIELD_LABELS: Record<string, string> = {
   username: '用户名',
+  nickname: '昵称',
   password: '密码',
   name: '名称',
   opening_balance: '期初余额',
+  owner: '账户归属',
   balance: '余额',
   account: '资金账户',
   transfer_account: '转入账户',
@@ -47,6 +49,8 @@ const FIELD_LABELS: Record<string, string> = {
   note: '备注',
   created_by: '记录人',
   month: '月份',
+  avatar: '头像',
+  current_password: '当前密码',
   q: '搜索',
 }
 
@@ -235,13 +239,18 @@ async function performRequest(
   body: unknown,
 ): Promise<Response> {
   const headers: Record<string, string> = { Accept: 'application/json' }
-  let requestBody: string | undefined
+  let requestBody: BodyInit | undefined
 
   if (method !== 'GET') {
-    headers['Content-Type'] = 'application/json'
     const token = readCookie(CSRF_COOKIE_NAME)
     if (token) headers[CSRF_HEADER_NAME] = token
-    if (body !== undefined) requestBody = JSON.stringify(body)
+    if (body instanceof Blob) {
+      requestBody = body
+      if (body.type) headers['Content-Type'] = body.type
+    } else {
+      headers['Content-Type'] = 'application/json'
+      if (body !== undefined) requestBody = JSON.stringify(body)
+    }
   }
 
   try {
