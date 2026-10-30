@@ -171,6 +171,7 @@ const inputDisabled = computed(() => saving.value || props.accounts.length === 0
 interface WalletGroup {
   key: 'personal' | 'public' | 'other'
   label: string
+  badge: string
   accounts: Account[]
 }
 
@@ -195,9 +196,9 @@ const walletGroups = computed<WalletGroup[]>(() => {
   }
 
   const groups: WalletGroup[] = [
-    { key: 'personal', label: '个人账户', accounts: personal },
-    { key: 'public', label: '公共账户', accounts: publicAccounts },
-    { key: 'other', label: '他人账户', accounts: others },
+    { key: 'personal', label: '个人账户', badge: '私', accounts: personal },
+    { key: 'public', label: '公共账户', badge: '公', accounts: publicAccounts },
+    { key: 'other', label: '他人账户', badge: '他', accounts: others },
   ]
   return groups.filter((group) => group.accounts.length > 0)
 })
@@ -773,7 +774,8 @@ watch(
               >
                 <template v-for="group in walletGroups" :key="group.key">
                   <el-dropdown-item
-                    class="wallet-menu__group"
+                    class="wallet-group-label"
+                    :class="`wallet-account--${group.key}`"
                     disabled
                   >
                     {{ group.label }}
@@ -781,21 +783,27 @@ watch(
                   <el-dropdown-item
                     v-for="account in group.accounts"
                     :key="account.id"
-                    class="wallet-menu__item"
-                    :class="{ 'is-selected': form.account === account.id }"
+                    class="wallet-account"
+                    :class="[`wallet-account--${group.key}`, { 'is-selected': form.account === account.id }]"
                     :command="account.id"
                     :aria-current="form.account === account.id ? 'true' : undefined"
                   >
-                    <span class="wallet-menu__text">
-                      <span class="wallet-menu__name">{{ account.name }}</span>
+                    <span
+                      class="wallet-badge"
+                      role="img"
+                      :aria-label="group.label"
+                      :title="group.label"
+                    >{{ group.badge }}</span>
+                    <span class="wallet-account__text">
+                      <span class="wallet-account__name">{{ account.name }}</span>
                       <span
                         v-if="group.key === 'other' && account.owner_name"
-                        class="wallet-menu__owner"
+                        class="wallet-account__owner"
                       >{{ account.owner_name }}</span>
                     </span>
                     <el-icon
                       v-if="form.account === account.id"
-                      class="wallet-menu__check"
+                      class="wallet-account__check"
                       :size="13"
                     >
                       <Check />
@@ -807,20 +815,28 @@ watch(
           </el-dropdown>
 
           <div ref="walletStripRef" class="wallet-strip">
-            <button
-              v-for="account in orderedAccounts"
-              :key="account.id"
-              type="button"
-              class="wallet-chip"
-              :class="{ 'is-selected': form.account === account.id }"
-              :aria-pressed="form.account === account.id"
-              :disabled="inputDisabled"
-              :data-account-id="account.id"
-              :title="account.name"
-              @click="selectAccount(account.id)"
-            >
-              {{ account.name }}
-            </button>
+            <template v-for="group in walletGroups" :key="group.key">
+              <button
+                v-for="account in group.accounts"
+                :key="account.id"
+                type="button"
+                class="wallet-chip"
+                :class="[`wallet-account--${group.key}`, { 'is-selected': form.account === account.id }]"
+                :aria-pressed="form.account === account.id"
+                :disabled="inputDisabled"
+                :data-account-id="account.id"
+                :title="account.name"
+                @click="selectAccount(account.id)"
+              >
+                <span
+                  class="wallet-badge"
+                  role="img"
+                  :aria-label="group.label"
+                  :title="group.label"
+                >{{ group.badge }}</span>
+                <span class="wallet-chip__name">{{ account.name }}</span>
+              </button>
+            </template>
           </div>
         </div>
       </el-form-item>
@@ -1290,19 +1306,21 @@ watch(
 }
 
 .wallet-chip {
+  display: inline-flex;
   flex: 0 0 auto;
+  gap: 5px;
+  align-items: center;
   max-width: 9.5rem;
   height: 34px;
-  padding: 0 12px;
+  padding: 0 11px 0 7px;
   overflow: hidden;
-  color: var(--hb-ink-soft);
+  color: var(--hb-wallet-ink, var(--hb-ink-soft));
   font: inherit;
   font-size: 12px;
   line-height: 1.2;
-  text-overflow: ellipsis;
   white-space: nowrap;
   cursor: pointer;
-  background: var(--hb-bg);
+  background: var(--hb-wallet-bg, var(--hb-bg));
   border: 1px solid transparent;
   border-radius: 999px;
   appearance: none;
@@ -1313,9 +1331,19 @@ watch(
     border-color 0.16s ease;
 }
 
-.wallet-chip:hover:not(:disabled) {
-  color: var(--hb-ink);
-  background: var(--hb-surface-raised);
+.wallet-chip__name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wallet-chip:hover:not(:disabled):not(.is-selected) {
+  background: color-mix(
+    in srgb,
+    var(--hb-wallet-bg, var(--hb-bg)) 92%,
+    var(--hb-wallet-ink, var(--hb-ink))
+  );
   border-color: var(--hb-line-strong);
 }
 
@@ -1330,13 +1358,15 @@ watch(
 }
 
 .wallet-chip.is-selected {
-  color: var(--kind-accent);
+  color: var(--hb-wallet-ink);
   font-weight: 600;
-  background: var(--kind-accent-soft);
-  border-color: var(--kind-accent);
+  background: var(--hb-wallet-bg);
+  border-color: var(--hb-terracotta);
 }
 
-/* Account picker: grouped grid, responsive width, scrollable on small screens */
+/* Account picker: grouped grid, responsive width, scrollable on small screens.
+   el-dropdown-item renders its <li> in Element Plus' own component scope, so
+   group/item rules must use :deep() to pierce this SFC's scope boundary. */
 .wallet-menu.el-dropdown-menu {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -1348,10 +1378,44 @@ watch(
   overscroll-behavior: contain;
 }
 
-.wallet-menu .wallet-menu__group {
+/* One wallet palette for both surfaces: dropdown <li> rows are reached through
+   :deep(), local chip buttons match the scoped selector directly. */
+.wallet-menu :deep(.wallet-account--personal),
+.wallet-account--personal {
+  --hb-wallet-bg: #edf5ee;
+  --hb-wallet-ink: #486d50;
+}
+
+.wallet-menu :deep(.wallet-account--public),
+.wallet-account--public {
+  --hb-wallet-bg: #edf3fa;
+  --hb-wallet-ink: #4d698b;
+}
+
+.wallet-menu :deep(.wallet-account--other),
+.wallet-account--other {
+  --hb-wallet-bg: #f3eef5;
+  --hb-wallet-ink: #796486;
+}
+
+/* Shared 私/公/他 badge for dropdown rows and strip chips. */
+.wallet-badge {
+  display: grid;
+  flex: 0 0 20px;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1;
+  border: 1px solid currentColor;
+  border-radius: 5px;
+}
+
+.wallet-menu :deep(.wallet-group-label) {
   grid-column: 1 / -1;
   padding: 7px 4px 1px;
-  color: var(--hb-ink-faint);
+  color: var(--hb-wallet-ink);
   font-size: 11px;
   font-weight: 600;
   line-height: 1.3;
@@ -1359,37 +1423,43 @@ watch(
   cursor: default;
 }
 
-.wallet-menu .wallet-menu__item {
+.wallet-menu :deep(.wallet-account + .wallet-group-label) {
+  padding-top: 9px;
+  border-top: 1px solid var(--hb-line);
+}
+
+.wallet-menu :deep(.wallet-account) {
   display: flex;
   gap: 6px;
   align-items: center;
   min-width: 0;
   min-height: 38px;
   padding: 4px 10px;
-  color: var(--hb-ink-soft);
+  color: var(--hb-wallet-ink);
   font-size: 12px;
   line-height: 1.2;
   white-space: normal;
   cursor: pointer;
-  background: var(--hb-bg);
+  background: var(--hb-wallet-bg);
   border: 1px solid transparent;
   border-radius: 9px;
 }
 
-.wallet-menu .wallet-menu__item:hover:not(.is-disabled):not(.is-selected) {
-  color: var(--hb-ink);
-  background: var(--hb-surface-raised);
+.wallet-menu :deep(.wallet-account:hover:not(.is-disabled):not(.is-selected)),
+.wallet-menu :deep(.wallet-account:focus:not(.is-disabled):not(.is-selected)) {
+  color: var(--hb-wallet-ink);
+  background: color-mix(in srgb, var(--hb-wallet-bg) 92%, var(--hb-wallet-ink));
   border-color: var(--hb-line-strong);
 }
 
-.wallet-menu .wallet-menu__item.is-selected {
-  color: var(--kind-accent, var(--hb-terracotta));
+.wallet-menu :deep(.wallet-account.is-selected) {
+  color: var(--hb-wallet-ink);
   font-weight: 600;
-  background: var(--kind-accent-soft);
-  border-color: var(--kind-accent, var(--hb-terracotta));
+  background: var(--hb-wallet-bg);
+  border-color: var(--hb-terracotta);
 }
 
-.wallet-menu__text {
+.wallet-account__text {
   display: flex;
   flex: 1 1 auto;
   flex-direction: column;
@@ -1397,7 +1467,7 @@ watch(
   min-width: 0;
 }
 
-.wallet-menu__name {
+.wallet-account__name {
   display: block;
   max-width: 100%;
   overflow: hidden;
@@ -1405,7 +1475,7 @@ watch(
   white-space: nowrap;
 }
 
-.wallet-menu__owner {
+.wallet-account__owner {
   display: block;
   overflow: hidden;
   color: var(--hb-ink-faint);
@@ -1416,8 +1486,9 @@ watch(
   white-space: nowrap;
 }
 
-.wallet-menu__check {
+.wallet-account__check {
   flex: 0 0 auto;
+  color: var(--hb-terracotta);
   margin-left: auto;
 }
 
