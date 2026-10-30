@@ -126,3 +126,37 @@ export interface Summary {
   categories: SummaryCategory[]
   daily: SummaryDay[]
 }
+
+/** One category in the household-wide snapshot; optional fields are omitted. */
+export interface CategoryEntryWire {
+  name: string
+  visible: boolean
+  parent_name?: string
+  icon?: string
+  default_name?: string
+  previous_names?: string[]
+}
+
+/** Complete configuration for one category kind on the wire. */
+export interface CategoryPreferencesWire {
+  entries: CategoryEntryWire[]
+  deleted_defaults: string[]
+}
+
+/**
+ * GET/PUT /api/categories/ response. Both preferences are null only while the
+ * household has never initialized its shared snapshot.
+ */
+export interface CategorySnapshotWire {
+  initialized: boolean
+  revision: number
+  expense: CategoryPreferencesWire | null
+  income: CategoryPreferencesWire | null
+}
+
+/** Atomic PUT body; base_revision is the revision the draft was opened at. */
+export interface CategorySavePayloadWire {
+  base_revision: number
+  expense: CategoryPreferencesWire
+  income: CategoryPreferencesWire
+}

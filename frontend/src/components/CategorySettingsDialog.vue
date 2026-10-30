@@ -23,9 +23,11 @@ import {
 import { authState } from '../stores/auth'
 import {
   categoryBillNames,
+  categoryState,
+  ensureCategories,
   isCategoryVisible,
   readCategoryEntries,
-  saveCategoryEntries,
+  saveCategorySnapshot,
   type CategoryEntry,
   type CategoryKind,
 } from '../stores/categories'
@@ -100,10 +102,6 @@ const drafts = ref<Record<CategoryKind, CategoryEntry[]>>({
   expense: [],
   income: [],
 })
-const baselineEntries = ref<Record<CategoryKind, CategoryEntry[]>>({
-  expense: [],
-  income: [],
-})
 const baselineSignatures = ref<Record<CategoryKind, string>>({
   expense: '',
   income: '',
@@ -111,7 +109,11 @@ const baselineSignatures = ref<Record<CategoryKind, string>>({
 const addedNames = ref<Record<CategoryKind, string[]>>({ expense: [], income: [] })
 const activeKind = ref<CategoryKind>(props.kind)
 const errorMessage = ref('')
+const loading = ref(false)
 const saving = ref(false)
+const busy = computed(
+  () => saving.value || loading.value || !categoryState.loaded,
+)
 const liveMessage = ref('')
 const editorState = ref<EditorState | null>(null)
 const expandedKeys = ref<Set<string>>(new Set())
@@ -124,6 +126,8 @@ const sheetRef = ref<HTMLElement | null>(null)
 const actionReturnFocus = ref<HTMLElement | null>(null)
 
 let openedScope: string | null = null
+let baselineRevision = 0
+let loadToken = 0
 let dragSession: DragSession | null = null
 let suppressClick = false
 let suppressClickTimer: ReturnType<typeof setTimeout> | null = null
@@ -326,22 +330,15 @@ function scheduleSuppressReset(): void {
   }, 0)
 }
 
-function loadDrafts(): void {
+async function loadDrafts(): Promise<void> {
+  const token = ++loadToken
+  const scope = currentScope()
+  openedScope = scope
   closeEditor()
   closeActionSheet()
   endDrag(false, false)
-  openedScope = currentScope()
-  const expense = copyEntries(readCategoryEntries('expense'))
-  const income = copyEntries(readCategoryEntries('income'))
-  drafts.value = { expense, income }
-  baselineEntries.value = {
-    expense: copyEntries(expense),
-    income: copyEntries(income),
-  }
-  baselineSignatures.value = {
-    expense: entriesSignature(expense),
-    income: entriesSignature(income),
-  }
+  drafts.value = { expense: [], income: [] }
+  baselineSignatures.value = { expense: '', income: '' }
   addedNames.value = { expense: [], income: [] }
   activeKind.value = props.kind
   expandedKeys.value = new Set()
@@ -349,20 +346,54 @@ function loadDrafts(): void {
   liveMessage.value = ''
   saving.value = false
   sheetMode.value = 'actions'
+  baselineRevision = 0
+  if (scope === null) {
+    loading.value = false
+    errorMessage.value = '请先登录，再管理分类设置'
+    return
+  }
+  loading.value = true
+  try {
+    await ensureCategories(true)
+  } catch (error) {
+    if (token !== loadToken) return
+    loading.value = false
+    errorMessage.value = errorMessageFrom(error)
+    return
+  }
+  if (token !== loadToken || !props.modelValue || currentScope() !== scope) {
+    return
+  }
+  if (!categoryState.loaded) {
+    loading.value = false
+    errorMessage.value = categoryState.error ?? '分类设置加载失败，请稍后重试'
+    return
+  }
+  const expense = copyEntries(readCategoryEntries('expense'))
+  const income = copyEntries(readCategoryEntries('income'))
+  drafts.value = { expense, income }
+  baselineSignatures.value = {
+    expense: entriesSignature(expense),
+    income: entriesSignature(income),
+  }
+  baselineRevision = categoryState.revision
+  loading.value = false
 }
 
 function clearTransientState(): void {
+  loadToken += 1
   closeEditor()
   closeActionSheet()
   endDrag(false, false)
   drafts.value = { expense: [], income: [] }
-  baselineEntries.value = { expense: [], income: [] }
   baselineSignatures.value = { expense: '', income: '' }
   addedNames.value = { expense: [], income: [] }
   expandedKeys.value = new Set()
   errorMessage.value = ''
   liveMessage.value = ''
+  loading.value = false
   saving.value = false
+  baselineRevision = 0
   sheetMode.value = 'actions'
   openedScope = null
 }
@@ -370,7 +401,7 @@ function clearTransientState(): void {
 watch(
   () => props.modelValue,
   (open) => {
-    if (open) loadDrafts()
+    if (open) void loadDrafts()
     else clearTransientState()
   },
   { immediate: true },
@@ -385,6 +416,7 @@ watch([() => authState.user?.id, () => authState.household?.id], () => {
 })
 
 onBeforeUnmount(() => {
+  loadToken += 1
   endDrag(false, false)
   closeActionSheet()
   clearSuppressClickTimer()
@@ -740,9 +772,9 @@ function confirmDelete(): void {
     : `已永久删除分类${entry.name}，历史账目保留`
 }
 
-function viewBillsAction(): void {
+async function viewBillsAction(): Promise<void> {
   const entry = actionEntry.value
-  if (!entry || saving.value) return
+  if (!entry || busy.value) return
   const kind = activeKind.value
   if (currentScope() !== openedScope) {
     closeActionSheet()
@@ -758,7 +790,7 @@ function viewBillsAction(): void {
   }
   saving.value = true
   try {
-    persistKinds(dirtyKinds.value)
+    if (dirtyKinds.value.length > 0) await persistDrafts()
   } catch (error) {
     saving.value = false
     closeActionSheet()
@@ -801,23 +833,20 @@ function validateDraftForSave(kind: CategoryKind): void {
   }
 }
 
-function persistKinds(kinds: CategoryKind[]): void {
-  for (const kind of kinds) validateDraftForSave(kind)
-  const saved: CategoryKind[] = []
-  try {
-    for (const kind of kinds) {
-      saveCategoryEntries(kind, copyEntries(drafts.value[kind]))
-      saved.push(kind)
-    }
-  } catch (error) {
-    for (const kind of saved.reverse()) {
-      try {
-        saveCategoryEntries(kind, copyEntries(baselineEntries.value[kind]))
-      } catch {
-        // Best-effort rollback; the original failure is reported below.
-      }
-    }
-    throw error
+async function persistDrafts(): Promise<void> {
+  validateDraftForSave('expense')
+  validateDraftForSave('income')
+  if (currentScope() !== openedScope) {
+    throw new Error('账号或家庭已变更，分类设置未保存，请重新打开')
+  }
+  const snapshot = await saveCategorySnapshot(
+    { expense: drafts.value.expense, income: drafts.value.income },
+    baselineRevision,
+  )
+  baselineRevision = snapshot.revision
+  baselineSignatures.value = {
+    expense: entriesSignature(drafts.value.expense),
+    income: entriesSignature(drafts.value.income),
   }
 }
 
@@ -835,8 +864,8 @@ function selectionForActiveKind(): string | undefined {
   return undefined
 }
 
-function submit(): void {
-  if (saving.value) return
+async function submit(): Promise<void> {
+  if (busy.value) return
   if (dragSession) {
     endDrag(false, true)
     errorMessage.value = '请先完成拖动，再保存设置'
@@ -847,10 +876,11 @@ function submit(): void {
     errorMessage.value = '账号或家庭已变更，分类设置未保存，请重新打开'
     return
   }
-  const kinds = dirtyKinds.value
+  const needsSave =
+    dirtyKinds.value.length > 0 || baselineRevision === 0
   saving.value = true
   try {
-    if (kinds.length > 0) persistKinds(kinds)
+    if (needsSave) await persistDrafts()
   } catch (error) {
     saving.value = false
     errorMessage.value = errorMessageFrom(error)
@@ -1292,7 +1322,7 @@ function suppressContextMenu(event: Event): void {
         <div class="category-settings-header__heading">
           <h2>{{ dialogTitle }}</h2>
           <p v-if="!editorState">
-            管理{{ activeLabel }}一级分类与子分类，长按卡片可拖动排序
+            分类由全家共享，保存后所有成员都会看到；长按卡片可拖动排序
           </p>
         </div>
         <button
@@ -1301,7 +1331,7 @@ function suppressContextMenu(event: Event): void {
           class="category-settings-header__add"
           aria-label="新增一级分类"
           title="新增一级分类"
-          :disabled="saving || dragBusy"
+          :disabled="busy || dragBusy"
           @click="openCreateParent"
         >
           <el-icon aria-hidden="true"><Plus /></el-icon>
@@ -1335,6 +1365,18 @@ function suppressContextMenu(event: Event): void {
       </section>
 
       <template v-else>
+        <div v-if="loading" class="category-load-state" role="status">
+          正在加载家庭共享分类…
+        </div>
+        <section
+          v-else-if="!categoryState.loaded"
+          class="category-load-state is-error"
+          aria-live="polite"
+        >
+          <p>分类设置尚未加载，暂时无法编辑。</p>
+          <el-button type="primary" plain @click="loadDrafts">重新加载</el-button>
+        </section>
+        <template v-else>
         <div class="category-kind-tabs" role="group" aria-label="分类类型">
           <button
             v-for="kind in KINDS"
@@ -1523,6 +1565,7 @@ function suppressContextMenu(event: Event): void {
             还没有{{ activeLabel }}分类，点击右上角的加号新增一级分类。
           </p>
         </div>
+        </template>
       </template>
 
       <p class="sr-only" aria-live="polite">{{ liveMessage }}</p>
@@ -1542,13 +1585,17 @@ function suppressContextMenu(event: Event): void {
           <p
             class="category-settings-footer__status"
             :class="{
-              'is-warning': visibleParents.length === 0,
+              'is-warning': categoryState.loaded && visibleParents.length === 0,
               'is-dragging': dragName !== null,
             }"
           >
-            <template v-if="saving">正在保存分类设置…</template>
+            <template v-if="loading">正在加载家庭共享分类…</template>
+            <template v-else-if="saving">正在保存分类设置…</template>
             <template v-else-if="dragName">
               正在拖动「{{ dragName }}」，松手放到同级新位置
+            </template>
+            <template v-else-if="!categoryState.loaded">
+              分类设置尚未加载，暂时无法保存
             </template>
             <template v-else-if="visibleParents.length === 0">
               请至少保留一个显示的一级分类
@@ -1572,7 +1619,7 @@ function suppressContextMenu(event: Event): void {
               class="category-save-button"
               type="primary"
               :loading="saving"
-              :disabled="dragBusy"
+              :disabled="busy || dragBusy"
               @click="submit"
             >
               保存设置
@@ -2325,6 +2372,28 @@ function suppressContextMenu(event: Event): void {
   border: 0;
 }
 
+.category-load-state {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 14px;
+  align-items: center;
+  justify-content: center;
+  padding: 48px 20px;
+  color: var(--hb-ink-faint);
+  font-size: 13px;
+  line-height: 1.6;
+  text-align: center;
+}
+
+.category-load-state p {
+  margin: 0;
+}
+
+.category-load-state.is-error {
+  color: var(--hb-danger);
+}
+
 .category-editor-panel {
   display: flex;
   flex: 1 1 auto;
@@ -2338,7 +2407,6 @@ function suppressContextMenu(event: Event): void {
   background: var(--hb-surface-raised);
   border: 1px solid var(--hb-line);
   border-radius: 18px;
-  scrollbar-gutter: stable;
 }
 
 .category-settings-footer {

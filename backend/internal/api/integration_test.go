@@ -82,7 +82,7 @@ func newTestEnvWithAdmin(t *testing.T, withAdmin bool) *testEnv {
 	// TEST_DATABASE_URL must point at a dedicated test database; these tests
 	// intentionally truncate their own tables and never touch app data elsewhere.
 	if _, err := database.Pool().Exec(ctx,
-		"TRUNCATE TABLE sessions, transactions, accounts, users, households RESTART IDENTITY CASCADE"); err != nil {
+		"TRUNCATE TABLE household_category_settings, sessions, transactions, accounts, users, households RESTART IDENTITY CASCADE"); err != nil {
 		database.Close()
 		t.Fatalf("清理测试数据库失败: %v", err)
 	}

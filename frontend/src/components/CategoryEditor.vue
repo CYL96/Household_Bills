@@ -8,7 +8,7 @@ import {
   CATEGORY_ICON_OPTIONS,
   DEFAULT_CATEGORY_ICON,
   DEFAULT_CATEGORY_ICON_GROUP,
-  categoryIcon,
+  categoryIconId,
   type CategoryIconGroupId,
   type CategoryIconId,
 } from '../utils/categoryIcons'
@@ -28,6 +28,11 @@ const emit = defineEmits<{
 
 const MAX_CATEGORY_NAME_LENGTH = 10
 const ICON_INPUT_NAME = 'category-editor-icon'
+
+/** Id lookups stay O(1); several categories may share one icon. */
+const ICON_OPTIONS_BY_ID = new Map(
+  CATEGORY_ICON_OPTIONS.map((option) => [option.id, option] as const),
+)
 
 const panelRef = ref<HTMLElement | null>(null)
 const nameInputRef = ref<InputInstance | null>(null)
@@ -70,28 +75,18 @@ const visibleIconOptions = computed(() =>
   ),
 )
 const selectedIconLabel = computed(
-  () =>
-    CATEGORY_ICON_OPTIONS.find((option) => option.id === icon.value)?.label ??
-    '通用',
+  () => ICON_OPTIONS_BY_ID.get(icon.value)?.label ?? '通用',
 )
 
 function resolveEntryIcon(entry: CategoryEntry | undefined): CategoryIconId {
   if (!entry) return DEFAULT_CATEGORY_ICON
-  if (entry.icon) return entry.icon
-  // Entries without an explicit icon keep their built-in icon. Resolve it
-  // back to a catalog id so renaming or re-submitting cannot drop it.
-  const fallback = categoryIcon(entry.name)
-  const option = CATEGORY_ICON_OPTIONS.find(
-    (candidate) => candidate.component === fallback,
-  )
-  return option?.id ?? DEFAULT_CATEGORY_ICON
+  // A still-valid explicit choice wins; otherwise the current name mapping
+  // decides, so renamed or retired icons fall back instead of dropping.
+  return categoryIconId(entry.name, entry.icon)
 }
 
 function resolveIconGroup(id: CategoryIconId): CategoryIconGroupId {
-  return (
-    CATEGORY_ICON_OPTIONS.find((option) => option.id === id)?.group ??
-    DEFAULT_CATEGORY_ICON_GROUP
-  )
+  return ICON_OPTIONS_BY_ID.get(id)?.group ?? DEFAULT_CATEGORY_ICON_GROUP
 }
 
 function resetForm(): void {
@@ -220,8 +215,12 @@ function handleNameKeydown(event: Event | KeyboardEvent): void {
       </p>
     </div>
 
-    <fieldset class="category-editor__icons">
-      <legend class="category-editor__label">分类图标</legend>
+    <div
+      class="category-editor__icons"
+      role="group"
+      aria-labelledby="category-editor-icons-label"
+    >
+      <p id="category-editor-icons-label" class="category-editor__label">分类图标</p>
       <div class="category-icon-groups" role="group" aria-label="图标分组">
         <button
           v-for="group in CATEGORY_ICON_GROUPS"
@@ -270,7 +269,7 @@ function handleNameKeydown(event: Event | KeyboardEvent): void {
           </span>
         </label>
       </div>
-    </fieldset>
+    </div>
 
     <div class="category-editor__actions">
       <el-button :disabled="disabled" @click="handleCancel">取消</el-button>
@@ -304,6 +303,7 @@ function handleNameKeydown(event: Event | KeyboardEvent): void {
 }
 
 .category-editor__label {
+  margin: 0;
   padding: 0;
   color: var(--hb-ink);
   font-size: 13px;
@@ -535,7 +535,8 @@ function handleNameKeydown(event: Event | KeyboardEvent): void {
 }
 
 .category-editor.is-fullscreen {
-  min-height: 100%;
+  flex: 1 1 auto;
+  min-height: 0;
 }
 
 .category-editor.is-fullscreen .category-editor__field,
@@ -544,11 +545,24 @@ function handleNameKeydown(event: Event | KeyboardEvent): void {
 }
 
 .category-editor.is-fullscreen .category-editor__icons {
-  flex: 1 0 auto;
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.category-editor.is-fullscreen .category-editor__icons > .category-editor__label,
+.category-editor.is-fullscreen .category-icon-groups,
+.category-editor.is-fullscreen .category-editor__selection {
+  flex: 0 0 auto;
 }
 
 .category-editor.is-fullscreen .category-icon-grid {
+  flex: 1 1 auto;
+  min-height: 0;
   max-height: none;
+  align-content: start;
 }
 
 @media (max-width: 480px) {

@@ -21,6 +21,7 @@ var (
 	ErrInvalidCurrentPassword    = errors.New("当前密码错误")
 	ErrAdminUsernameFixed        = errors.New("管理员用户名不可修改")
 	ErrAdminNotDeletable         = errors.New("管理员账号不可删除")
+	ErrCategoryConflict          = errors.New("分类设置已被其他成员更新")
 )
 
 // TransferCategory is the fixed category for transfer transactions. Transfers

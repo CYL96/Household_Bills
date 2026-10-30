@@ -33,6 +33,8 @@ import type {
 import { useMediaQuery } from '../composables/useMediaQuery'
 import { authState, familyMembers } from '../stores/auth'
 import {
+  categoryState,
+  ensureCategories,
   isCategoryVisible,
   readCategoryEntries,
   type CategoryEntry,
@@ -139,6 +141,7 @@ const form = reactive<TransactionFormState>({
 })
 
 let lastKind: TransactionKind = 'expense'
+let categoryLoadToken = 0
 
 const isEditing = computed(() => Boolean(props.transaction))
 const dialogTitle = computed(() => {
@@ -163,9 +166,8 @@ const historicalCategory = computed(() => {
 })
 
 /**
- * Stored entries for the current kind, read once per category revision.
- * Tile order and icons both derive from this snapshot so no tile touches
- * localStorage by itself.
+ * Household-shared entries for the current kind, from the reactive category
+ * snapshot. Tile order and icons both derive from this state.
  */
 const categoryEntries = computed<CategoryEntry[]>(() => {
   if (form.kind === 'transfer') return []
@@ -425,6 +427,8 @@ const orderedAccounts = computed<Account[]>(() =>
 
 function defaultCategory(kind: TransactionKind): string {
   if (kind === 'transfer') return TRANSFER_CATEGORY
+  // Categories are household data; never pretend the defaults were loaded.
+  if (!categoryState.loaded) return ''
   const entries = readCategoryEntries(kind)
   const topLevel = entries.find(
     (entry) => !entry.parentName && isCategoryVisible(entry, entries),
@@ -583,7 +587,7 @@ function resetForm(): void {
   form.date = nowLocalDateTime()
   form.account = undefined
   form.kind = props.initialKind ?? 'expense'
-  form.category = defaultCategory(form.kind)
+  form.category = ''
 
   if (props.transaction) {
     form.account = props.transaction.account
@@ -592,7 +596,7 @@ function resetForm(): void {
     form.category =
       props.transaction.kind === 'transfer'
         ? props.transaction.category || TRANSFER_CATEGORY
-        : props.transaction.category || defaultCategory(props.transaction.kind)
+        : props.transaction.category || ''
     form.date = props.transaction.date
     form.note = props.transaction.note ?? ''
     form.owner = props.transaction.owner ?? authState.user?.id
@@ -610,10 +614,53 @@ function resetForm(): void {
   }
 
   lastKind = form.kind
+  void refreshCategoriesForOpen()
   void nextTick(() => {
     formRef.value?.clearValidate()
     scrollSelectedWalletIntoView()
   })
+}
+
+/**
+ * Refresh the household categories, then choose the first visible top-level
+ * category only when the form still has nothing selected. Existing transaction
+ * strings and user selections are never rewritten. An already loaded snapshot
+ * fills the default immediately, while the refresh is still awaited so a
+ * removed category cannot stay silently selected.
+ */
+async function refreshCategoriesForOpen(): Promise<void> {
+  const token = ++categoryLoadToken
+  let autoSelected = ''
+  if (
+    form.kind !== 'transfer' &&
+    !form.category.trim() &&
+    categoryState.loaded
+  ) {
+    autoSelected = defaultCategory(form.kind)
+    if (autoSelected) {
+      form.category = autoSelected
+      formRef.value?.clearValidate('category')
+    }
+  }
+  try {
+    await ensureCategories(true)
+  } catch {
+    // The store exposes load failures through categoryState.error.
+  }
+  if (token !== categoryLoadToken || !props.modelValue) return
+  if (form.kind === 'transfer' || !categoryState.loaded) return
+  if (!form.category.trim()) {
+    form.category = defaultCategory(form.kind)
+    formRef.value?.clearValidate('category')
+    return
+  }
+  if (autoSelected && form.category === autoSelected) {
+    const next = defaultCategory(form.kind)
+    if (next !== form.category) {
+      form.category = next
+      formRef.value?.clearValidate('category')
+    }
+  }
 }
 
 function closeDialog(force = false): void {
@@ -646,7 +693,7 @@ function handleKindChange(value: unknown): void {
   } else {
     form.transferAccount = undefined
     if (previous !== next) {
-      form.category = defaultCategory(next)
+      form.category = categoryState.loaded ? defaultCategory(next) : ''
     }
   }
 
@@ -1275,16 +1322,29 @@ watch(
 
 watch(
   [() => authState.user?.id, () => authState.household?.id],
-  () => closeSubcategory(),
+  () => {
+    categoryLoadToken += 1
+    closeSubcategory()
+  },
 )
 
 watch(categoryEntries, (entries) => {
   const parentName = subcategoryParentName.value
-  if (!parentName) return
-  const parent = entries.find(
-    (entry) => !entry.parentName && entry.name === parentName,
-  )
-  if (!parent || !isCategoryVisible(parent, entries)) closeSubcategory()
+  if (parentName) {
+    const parent = entries.find(
+      (entry) => !entry.parentName && entry.name === parentName,
+    )
+    if (!parent || !isCategoryVisible(parent, entries)) closeSubcategory()
+  }
+  if (
+    !isEditing.value &&
+    form.kind !== 'transfer' &&
+    !form.category.trim() &&
+    categoryState.loaded
+  ) {
+    form.category = defaultCategory(form.kind)
+    formRef.value?.clearValidate('category')
+  }
 })
 
 watch(subcategoryOpen, (open) => {
@@ -1299,6 +1359,7 @@ watch(subcategoryPanelRef, (panel) => {
 })
 
 onBeforeUnmount(() => {
+  categoryLoadToken += 1
   stopSubcategoryTracking()
   subcategoryPosition.value = null
 })
@@ -1559,6 +1620,27 @@ onBeforeUnmount(() => {
                 </button>
               </div>
 
+              <p
+                v-if="categoryState.loading"
+                class="category-selection-note"
+                role="status"
+              >
+                正在加载家庭共享分类…
+              </p>
+              <p
+                v-else-if="categoryState.error"
+                class="category-selection-note is-error"
+                role="alert"
+              >
+                分类候选加载失败：{{ categoryState.error }}
+                <button
+                  type="button"
+                  class="category-retry"
+                  @click="refreshCategoriesForOpen"
+                >
+                  重试
+                </button>
+              </p>
               <p
                 v-if="categorySelectionNotice"
                 class="category-selection-note"
@@ -2625,6 +2707,25 @@ onBeforeUnmount(() => {
   color: var(--hb-ink-faint);
   font-size: 11.5px;
   line-height: 1.4;
+}
+
+.category-selection-note.is-error {
+  color: var(--hb-danger);
+}
+
+.category-retry {
+  margin-left: 4px;
+  padding: 0;
+  color: var(--kind-accent);
+  font: inherit;
+  cursor: pointer;
+  background: transparent;
+  border: 0;
+}
+
+.category-retry:focus-visible {
+  outline: 2px solid var(--kind-accent);
+  outline-offset: 1px;
 }
 
 /*

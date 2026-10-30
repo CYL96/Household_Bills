@@ -86,6 +86,8 @@ func New(cfg config.Config, st *store.Store, logger *log.Logger) http.Handler {
 	authenticated.POST("/transactions/", a.handleCreateTransaction)
 	authenticated.PATCH("/transactions/:id/", a.handlePatchTransaction)
 	authenticated.DELETE("/transactions/:id/", a.handleDeleteTransaction)
+	authenticated.GET("/categories/", a.handleGetCategories)
+	authenticated.PUT("/categories/", a.handlePutCategories)
 	authenticated.GET("/summary/", a.handleSummary)
 
 	router.NoRoute(a.handleNoRoute)
