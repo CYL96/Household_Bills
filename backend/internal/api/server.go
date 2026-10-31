@@ -56,6 +56,21 @@ func New(cfg config.Config, st *store.Store, logger *log.Logger) http.Handler {
 		}),
 	)
 
+	// Android update discovery and package downloads are intentionally public
+	// and never touch sessions or the database. They must still answer as API
+	// JSON rather than falling through to the SPA. no-store also covers unknown
+	// update paths handled by NoRoute/NoMethod.
+	router.Use(func(c *gin.Context) {
+		if isAppUpdatePath(c.Request.URL.Path) {
+			c.Header("Cache-Control", "no-store")
+		}
+		c.Next()
+	})
+	publicUpdates := router.Group("/api/app-update")
+	publicUpdates.GET("/", a.handleAppUpdate)
+	publicUpdates.GET("/download/:sha256/", a.handleAppUpdateDownload)
+	publicUpdates.HEAD("/download/:sha256/", a.handleAppUpdateDownload)
+
 	api := router.Group("/api")
 	api.Use(func(c *gin.Context) {
 		c.Header("Cache-Control", "no-store")
@@ -82,6 +97,7 @@ func New(cfg config.Config, st *store.Store, logger *log.Logger) http.Handler {
 	authenticated.GET("/accounts/", a.handleListAccounts)
 	authenticated.POST("/accounts/", a.handleCreateAccount)
 	authenticated.PATCH("/accounts/:id/", a.handlePatchAccount)
+	authenticated.DELETE("/accounts/:id/", a.handleDeleteAccount)
 	authenticated.GET("/transactions/", a.handleListTransactions)
 	authenticated.POST("/transactions/", a.handleCreateTransaction)
 	authenticated.PATCH("/transactions/:id/", a.handlePatchTransaction)

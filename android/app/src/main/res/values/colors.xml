@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="teal_500">#26A69A</color>
+    <color name="teal_600">#00897B</color>
+    <color name="teal_800">#00695C</color>
+    <color name="app_background">#F7F8FA</color>
+    <color name="surface">#FFFFFF</color>
+    <color name="text_primary">#1F2933</color>
+    <color name="text_secondary">#5F6B7A</color>
+    <color name="divider">#E3E7EB</color>
+    <color name="ic_launcher_background">#00897B</color>
+</resources>

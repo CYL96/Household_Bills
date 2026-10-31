@@ -11,7 +11,10 @@ import (
 	"household-bills/backend/internal/store"
 )
 
-const accountOwnerErrorMessage = "账户归属成员不存在。"
+const (
+	accountOwnerErrorMessage = "账户归属成员不存在。"
+	accountInUseErrorMessage = "该账户已有收支或转账记录，不能删除。"
+)
 
 type accountCreateRequest struct {
 	Name    string          `json:"name"`
@@ -162,4 +165,34 @@ func (a *API) handlePatchAccount(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, accountResponse(account))
+}
+
+func (a *API) handleDeleteAccount(c *gin.Context) {
+	auth, ok := currentAuth(c)
+	if !ok {
+		abortDetail(c, http.StatusUnauthorized, "请先登录。")
+		return
+	}
+	accountID, ok := positiveID(c.Param("id"))
+	if !ok {
+		abortDetail(c, http.StatusNotFound, "未找到该账户。")
+		return
+	}
+
+	err := a.store.DeleteAccount(
+		c.Request.Context(), auth.User.HouseholdID, accountID)
+	if errors.Is(err, store.ErrAccountInUse) {
+		abortDetail(c, http.StatusConflict, accountInUseErrorMessage)
+		return
+	}
+	if errors.Is(err, store.ErrNotFound) {
+		abortDetail(c, http.StatusNotFound, "未找到该账户。")
+		return
+	}
+	if err != nil {
+		a.logger.Printf("删除账户失败: %v", err)
+		abortDetail(c, http.StatusInternalServerError, "服务器内部错误。")
+		return
+	}
+	c.Status(http.StatusNoContent)
 }

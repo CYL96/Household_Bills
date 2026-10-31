@@ -12,6 +12,7 @@ var (
 	ErrNotFound                  = errors.New("记录不存在")
 	ErrInvalidOwner              = errors.New("归属成员不存在")
 	ErrInvalidAccount            = errors.New("账户不存在")
+	ErrAccountInUse              = errors.New("账户已有收支或转账记录，不能删除")
 	ErrInvalidTransfer           = errors.New("转入账户无效")
 	ErrBalanceOutOfRange         = errors.New("余额超出允许范围")
 	ErrTransferAccountNotAllowed = errors.New("非转账交易不能设置转入账户")

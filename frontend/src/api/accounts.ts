@@ -12,3 +12,7 @@ export function createAccount(payload: AccountPayload): Promise<Account> {
 export function updateAccount(id: number, payload: AccountPayload): Promise<Account> {
   return request<Account>(`/api/accounts/${id}/`, { method: 'PATCH', body: payload })
 }
+
+export function deleteAccount(id: number): Promise<void> {
+  return request<void>(`/api/accounts/${id}/`, { method: 'DELETE' })
+}

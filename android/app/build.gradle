@@ -1,0 +1,219 @@
+import groovy.json.JsonOutput
+import java.nio.file.AtomicMoveNotSupportedException
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
+import java.security.MessageDigest
+
+plugins {
+    id 'com.android.application'
+}
+
+// Set all four env vars to sign release builds; otherwise the release APK stays unsigned.
+def releaseKeystorePath = System.getenv('HOUSEHOLD_BILLS_KEYSTORE')?.trim()
+def releaseStorePassword = System.getenv('HOUSEHOLD_BILLS_KEYSTORE_PASSWORD')
+def releaseKeyAlias = System.getenv('HOUSEHOLD_BILLS_KEY_ALIAS')?.trim()
+def releaseKeyPassword = System.getenv('HOUSEHOLD_BILLS_KEY_PASSWORD')
+def hasReleaseSigning = releaseKeystorePath && releaseStorePassword && releaseKeyAlias && releaseKeyPassword
+
+android {
+    namespace 'com.household.bills'
+    compileSdk 35
+
+    defaultConfig {
+        applicationId 'com.household.bills'
+        minSdk 26
+        targetSdk 35
+        versionCode 3
+        versionName '1.0.2'
+    }
+
+    signingConfigs {
+        if (hasReleaseSigning) {
+            release {
+                storeFile file(releaseKeystorePath)
+                storePassword releaseStorePassword
+                keyAlias releaseKeyAlias
+                keyPassword releaseKeyPassword
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            debuggable false
+            minifyEnabled false
+            if (hasReleaseSigning) {
+                signingConfig signingConfigs.release
+            }
+        }
+    }
+
+    buildFeatures {
+        buildConfig = true
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}
+
+dependencies {
+    testImplementation 'junit:junit:4.13.2'
+}
+
+def releaseApkFile = null
+
+tasks.register('publishRelease') {
+    group = 'publishing'
+    description = 'Publishes the signed release APK and latest.json for the in-app updater.'
+    dependsOn 'assembleRelease'
+    // Publishing must reflect the current APK; never skip because a previous latest.json looked current.
+    outputs.upToDateWhen { false }
+
+    doLast {
+        // Read after AGP finalizeDsl so init-script overrides match the APK actually built.
+        def appVersionCode = android.defaultConfig.versionCode
+        def appVersionName = android.defaultConfig.versionName
+        def appMinSdk = android.defaultConfig.minSdk
+
+        def missingSigningVars = ['HOUSEHOLD_BILLS_KEYSTORE', 'HOUSEHOLD_BILLS_KEYSTORE_PASSWORD',
+                                  'HOUSEHOLD_BILLS_KEY_ALIAS', 'HOUSEHOLD_BILLS_KEY_PASSWORD']
+                .findAll { !System.getenv(it) }
+        if (!missingSigningVars.isEmpty()) {
+            throw new GradleException("publishRelease requires the full release signing environment; " +
+                    "missing: ${missingSigningVars.join(', ')}. Refusing to publish an unsigned APK.")
+        }
+        if (android.buildTypes.findByName('release')?.signingConfig == null) {
+            throw new GradleException('publishRelease requires the release build type to use the release signingConfig.')
+        }
+        if (releaseApkFile == null || !releaseApkFile.isFile()) {
+            throw new GradleException("Signed release APK was not produced" +
+                    (releaseApkFile == null ? '.' : " at ${releaseApkFile}."))
+        }
+        if (releaseApkFile.name.endsWith('-unsigned.apk')) {
+            throw new GradleException("Release APK ${releaseApkFile} is unsigned; refusing to publish.")
+        }
+        if (!(appVersionCode instanceof Number) || appVersionCode <= 0 || appVersionCode > 2100000000) {
+            throw new GradleException("Invalid versionCode ${appVersionCode}; it must be 1..2100000000.")
+        }
+        if (!appVersionName || appVersionName.trim().isEmpty()) {
+            throw new GradleException('Invalid versionName; it must not be empty.')
+        }
+        if (!(appMinSdk instanceof Number) || appMinSdk < 26) {
+            throw new GradleException("Invalid minSdk ${appMinSdk}; the update contract requires at least 26.")
+        }
+
+        def configuredReleaseDir = System.getenv('ANDROID_RELEASE_DIR')?.trim()
+        // Relative overrides are resolved from the android/ project root, matching the documented default.
+        def releaseDir = configuredReleaseDir ? rootProject.file(configuredReleaseDir) : rootProject.file('release')
+        if (releaseDir.exists() && !releaseDir.isDirectory()) {
+            throw new GradleException("ANDROID_RELEASE_DIR points to a file, not a directory: ${releaseDir}")
+        }
+        if (!releaseDir.isDirectory() && !releaseDir.mkdirs()) {
+            throw new GradleException("Could not create release directory: ${releaseDir}")
+        }
+        // The backend service and the non-root container user must be able to traverse and read.
+        releaseDir.setReadable(true, false)
+        releaseDir.setExecutable(true, false)
+
+        def hex = { byte[] bytes -> bytes.collect { String.format('%02x', it & 0xff) }.join() }
+        def inspectFile = { File file ->
+            def digest = MessageDigest.getInstance('SHA-256')
+            long size = 0L
+            file.withInputStream { input ->
+                byte[] buffer = new byte[64 * 1024]
+                int read
+                while ((read = input.read(buffer)) != -1) {
+                    digest.update(buffer, 0, read)
+                    size += read
+                }
+            }
+            [size: size, sha256: hex(digest.digest())]
+        }
+        def copyAndHash = { File source, File destination ->
+            def digest = MessageDigest.getInstance('SHA-256')
+            long size = 0L
+            source.withInputStream { input ->
+                destination.withOutputStream { output ->
+                    byte[] buffer = new byte[64 * 1024]
+                    int read
+                    while ((read = input.read(buffer)) != -1) {
+                        digest.update(buffer, 0, read)
+                        output.write(buffer, 0, read)
+                        size += read
+                    }
+                }
+            }
+            [size: size, sha256: hex(digest.digest())]
+        }
+        def moveAtomically = { File source, File destination ->
+            try {
+                Files.move(source.toPath(), destination.toPath(),
+                        StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
+            } catch (AtomicMoveNotSupportedException exception) {
+                throw new GradleException("Cannot atomically publish ${destination}; the release directory " +
+                        'must be on a filesystem that supports atomic renames.', exception)
+            } catch (IOException exception) {
+                throw new GradleException("Cannot atomically publish ${destination}: ${exception.message}", exception)
+            }
+        }
+        File temporaryApk = null
+        File temporaryManifest = null
+        try {
+            temporaryApk = File.createTempFile('.household-bills-publish-', '.apk.tmp', releaseDir)
+            def apk = copyAndHash(releaseApkFile, temporaryApk)
+            // The container runs as an unprivileged user; published files must be world-readable.
+            temporaryApk.setReadable(true, false)
+            if (apk.size < 1 || apk.size > 536870912L) {
+                throw new GradleException("Release APK size ${apk.size} is outside the supported " +
+                        '1..536870912 byte range.')
+            }
+            def apkName = "household-bills-${appVersionCode}-${apk.sha256}.apk"
+            def publishedApk = new File(releaseDir, apkName)
+            if (publishedApk.isFile()) {
+                def existing = inspectFile(publishedApk)
+                if (existing.size == apk.size && existing.sha256 == apk.sha256) {
+                    publishedApk.setReadable(true, false)
+                    temporaryApk.delete()
+                } else {
+                    moveAtomically(temporaryApk, publishedApk)
+                }
+            } else {
+                moveAtomically(temporaryApk, publishedApk)
+            }
+
+            // Publish the manifest only after the APK is fully in place.
+            def manifest = JsonOutput.toJson([
+                    version_code: appVersionCode,
+                    version_name: appVersionName,
+                    min_sdk     : appMinSdk,
+                    size_bytes  : apk.size,
+                    sha256      : apk.sha256,
+                    apk_file    : apkName
+            ])
+            temporaryManifest = File.createTempFile('.household-bills-latest-', '.json.tmp', releaseDir)
+            temporaryManifest.setText(manifest, 'UTF-8')
+            temporaryManifest.setReadable(true, false)
+            moveAtomically(temporaryManifest, new File(releaseDir, 'latest.json'))
+            logger.lifecycle("Published ${apkName} and latest.json in ${releaseDir}")
+        } finally {
+            if (temporaryApk != null && temporaryApk.exists()) {
+                temporaryApk.delete()
+            }
+            if (temporaryManifest != null && temporaryManifest.exists()) {
+                temporaryManifest.delete()
+            }
+        }
+    }
+}
+
+afterEvaluate {
+    def releaseVariant = android.applicationVariants.find { it.name == 'release' }
+    releaseApkFile = releaseVariant?.outputs?.find { it.outputFile != null }?.outputFile
+    if (releaseApkFile != null) {
+        tasks.named('publishRelease').configure {
+            inputs.file(releaseApkFile).withPropertyName('releaseApk')
+        }
+    }
+}

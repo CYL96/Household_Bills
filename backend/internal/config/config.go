@@ -13,21 +13,24 @@ import (
 // Config contains the runtime configuration for the HTTP server and database.
 // Parent deployment owns environment files; this package only consumes env vars.
 type Config struct {
-	DatabaseURL    string
-	ListenAddr     string
-	CookieSecure   bool
-	FrontendDist   string
-	AllowedOrigins []string
-	AdminPassword  string
+	DatabaseURL       string
+	ListenAddr        string
+	CookieSecure      bool
+	FrontendDist      string
+	AndroidReleaseDir string
+	AllowedOrigins    []string
+	AdminPassword     string
 }
 
 // Load reads and validates environment configuration. DATABASE_URL is required;
 // PostgreSQL is the only supported database.
 func Load() (Config, error) {
 	cfg := Config{
-		DatabaseURL:   strings.TrimSpace(os.Getenv("DATABASE_URL")),
-		ListenAddr:    strings.TrimSpace(envOr("LISTEN_ADDR", ":8000")),
-		FrontendDist:  strings.TrimSpace(envOr("FRONTEND_DIST", "../frontend/dist")),
+		DatabaseURL:  strings.TrimSpace(os.Getenv("DATABASE_URL")),
+		ListenAddr:   strings.TrimSpace(envOr("LISTEN_ADDR", ":8000")),
+		FrontendDist: strings.TrimSpace(envOr("FRONTEND_DIST", "../frontend/dist")),
+		AndroidReleaseDir: strings.TrimSpace(
+			envOr("ANDROID_RELEASE_DIR", "../android/release")),
 		AdminPassword: os.Getenv("ADMIN_PASSWORD"),
 	}
 
@@ -47,6 +50,9 @@ func Load() (Config, error) {
 	}
 	if cfg.FrontendDist == "" {
 		cfg.FrontendDist = "../frontend/dist"
+	}
+	if cfg.AndroidReleaseDir == "" {
+		cfg.AndroidReleaseDir = "../android/release"
 	}
 
 	rawSecure, ok := os.LookupEnv("COOKIE_SECURE")

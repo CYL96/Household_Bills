@@ -2,7 +2,15 @@
 import { computed, ref, watch } from 'vue'
 import { RouterView, useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { ArrowDown, Menu, Setting, SwitchButton } from '@element-plus/icons-vue'
+import {
+  ArrowDown,
+  DataAnalysis,
+  Menu,
+  Odometer,
+  Setting,
+  SwitchButton,
+  Tickets,
+} from '@element-plus/icons-vue'
 import AppNav from '../components/AppNav.vue'
 import { getErrorMessage } from '../api/client'
 import UserAvatar from '../components/UserAvatar.vue'
@@ -19,6 +27,14 @@ const loggingOut = ref(false)
 
 const pageTitle = computed(() =>
   typeof route.meta.title === 'string' ? route.meta.title : '家庭账本',
+)
+
+const overviewActive = computed(() => route.path === '/')
+const transactionsActive = computed(
+  () => route.path === '/transactions' || route.path.startsWith('/transactions/'),
+)
+const statisticsActive = computed(
+  () => route.path === '/statistics' || route.path.startsWith('/statistics/'),
 )
 
 const householdName = computed(() => authState.household?.name ?? '我的家庭')
@@ -135,6 +151,36 @@ function handleUserCommand(command: string | number | object): void {
       </main>
     </div>
 
+    <nav class="mobile-tab-nav" aria-label="手机快捷导航">
+      <router-link
+        to="/"
+        class="mobile-tab"
+        :class="{ 'is-active': overviewActive }"
+        :aria-current="overviewActive ? 'page' : undefined"
+      >
+        <el-icon :size="20"><Odometer /></el-icon>
+        <span class="mobile-tab__label">总览</span>
+      </router-link>
+      <router-link
+        to="/transactions"
+        class="mobile-tab"
+        :class="{ 'is-active': transactionsActive }"
+        :aria-current="transactionsActive ? 'page' : undefined"
+      >
+        <el-icon :size="20"><Tickets /></el-icon>
+        <span class="mobile-tab__label">明细</span>
+      </router-link>
+      <router-link
+        to="/statistics/reports"
+        class="mobile-tab"
+        :class="{ 'is-active': statisticsActive }"
+        :aria-current="statisticsActive ? 'page' : undefined"
+      >
+        <el-icon :size="20"><DataAnalysis /></el-icon>
+        <span class="mobile-tab__label">统计</span>
+      </router-link>
+    </nav>
+
     <el-drawer
       v-model="navOpen"
       title="导航"
@@ -143,7 +189,7 @@ function handleUserCommand(command: string | number | object): void {
       class="app-drawer"
     >
       <div class="drawer-nav">
-        <AppNav @navigate="navOpen = false" />
+        <AppNav variant="drawer" @navigate="navOpen = false" />
       </div>
       <div class="drawer-account">
         <div class="drawer-account__identity">
@@ -188,6 +234,9 @@ function handleUserCommand(command: string | number | object): void {
 
 <style scoped>
 .app-shell {
+  /* Shared with main.css so the floating entry clears the bottom tab bar. */
+  --hb-mobile-nav-height: 58px;
+
   min-height: 100vh;
 }
 
@@ -331,6 +380,10 @@ function handleUserCommand(command: string | number | object): void {
   padding: 30px 32px 56px;
 }
 
+.mobile-tab-nav {
+  display: none;
+}
+
 .drawer-nav {
   flex: 1;
   min-height: 0;
@@ -442,6 +495,80 @@ function handleUserCommand(command: string | number | object): void {
 
   .page-content {
     padding: 18px 14px 40px;
+  }
+}
+
+/*
+ * Phones get a fixed three-tab bar for 总览 / 明细 / 统计. Kept below the
+ * Element Plus drawers and dialogs (z-index >= 2000) so overlays cover it.
+ */
+@media (max-width: 760px) {
+  .mobile-tab-nav {
+    position: fixed;
+    right: 0;
+    bottom: 0;
+    left: 0;
+    z-index: 30;
+    display: flex;
+    height: calc(
+      var(--hb-mobile-nav-height) + env(safe-area-inset-bottom, 0px)
+    );
+    padding:
+      4px env(safe-area-inset-right, 0px)
+      env(safe-area-inset-bottom, 0px) env(safe-area-inset-left, 0px);
+    background: rgba(255, 253, 248, 0.94);
+    border-top: 1px solid rgba(216, 205, 188, 0.7);
+    box-shadow: 0 -6px 24px rgba(59, 48, 33, 0.08);
+    backdrop-filter: blur(18px);
+  }
+
+  .mobile-tab {
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 2px;
+    min-width: 0;
+    padding: 2px 4px;
+    color: var(--hb-ink-faint);
+    font-size: 11px;
+    font-weight: 500;
+    line-height: 1.2;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  .mobile-tab .el-icon {
+    display: grid;
+    width: 46px;
+    height: 26px;
+    place-items: center;
+    border-radius: 999px;
+    transition: color 0.18s ease, background-color 0.18s ease;
+  }
+
+  .mobile-tab:hover {
+    color: var(--hb-ink);
+  }
+
+  .mobile-tab.is-active {
+    color: var(--hb-teal-dark);
+    font-weight: 600;
+  }
+
+  .mobile-tab.is-active .el-icon {
+    color: var(--hb-teal);
+    background: var(--hb-teal-soft);
+  }
+
+  /*
+   * Reserving the bar plus a small gap keeps the last page content and the
+   * floating 记一笔 entry scrollable clear of the fixed navigation.
+   */
+  .page-content {
+    padding-bottom: calc(
+      var(--hb-mobile-nav-height) + 28px + env(safe-area-inset-bottom, 0px)
+    );
   }
 }
 </style>

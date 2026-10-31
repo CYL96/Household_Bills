@@ -189,6 +189,63 @@ func (s *Store) UpdateAccount(ctx context.Context, householdID, accountID int64,
 	return account, nil
 }
 
+// DeleteAccount removes an empty wallet. The wallet row is locked exactly like
+// every other balance-changing writer (lockAccounts/UpdateAccount), so a
+// concurrent transaction insert for this wallet either commits before the
+// reference check or waits for this deletion and then fails with
+// ErrInvalidAccount. Both ledger foreign keys cascade on delete, so the
+// reference check must run under that lock before the row is removed;
+// otherwise the cascade would silently erase ledger history.
+func (s *Store) DeleteAccount(ctx context.Context, householdID, accountID int64) error {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("开启账户删除事务失败: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var lockedID int64
+	err = tx.QueryRow(ctx, `
+		SELECT id FROM accounts
+		WHERE id = $1 AND household_id = $2
+		FOR UPDATE`, accountID, householdID).Scan(&lockedID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrNotFound
+	}
+	if err != nil {
+		return fmt.Errorf("锁定账户失败: %w", err)
+	}
+
+	var usedAsAccount, usedAsTransfer bool
+	err = tx.QueryRow(ctx, `
+		SELECT EXISTS(
+		           SELECT 1 FROM transactions
+		           WHERE household_id = $1 AND account_id = $2),
+		       EXISTS(
+		           SELECT 1 FROM transactions
+		           WHERE household_id = $1 AND transfer_account_id = $2)`,
+		householdID, accountID).Scan(&usedAsAccount, &usedAsTransfer)
+	if err != nil {
+		return fmt.Errorf("检查账户收支失败: %w", err)
+	}
+	if usedAsAccount || usedAsTransfer {
+		return ErrAccountInUse
+	}
+
+	tag, err := tx.Exec(ctx,
+		"DELETE FROM accounts WHERE id = $1 AND household_id = $2",
+		accountID, householdID)
+	if err != nil {
+		return fmt.Errorf("删除账户失败: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("提交账户删除失败: %w", err)
+	}
+	return nil
+}
+
 // accountNetCents reads the ledger contribution that the derived balance adds
 // to the stored opening balance. Callers must hold the wallet row lock so the
 // result cannot change before the correction is written.

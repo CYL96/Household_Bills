@@ -331,20 +331,33 @@ svg {
 
 /*
  * Mobile floating entry shared by the dashboard and transactions pages: the
- * header "记一笔" button becomes a fixed bottom-right action. Kept below the
- * Element Plus overlays used by dialogs and drawers (z-index >= 2000).
+ * header "记一笔" button becomes a fixed bottom-right "+" action. Kept below
+ * the Element Plus overlays used by dialogs and drawers (z-index >= 2000).
  */
 @media (max-width: 760px) {
   .mobile-entry-fab.el-button {
     position: fixed;
     right: calc(16px + env(safe-area-inset-right, 0px));
-    bottom: calc(16px + env(safe-area-inset-bottom, 0px));
+    /* --hb-mobile-nav-height is defined by the app layout's shell. */
+    bottom: calc(
+      16px + var(--hb-mobile-nav-height, 58px) +
+        env(safe-area-inset-bottom, 0px)
+    );
     z-index: 40;
     height: 48px;
+    width: 48px;
     min-width: 48px;
-    padding: 0 20px;
+    padding: 0;
     border-radius: 999px;
     box-shadow: 0 12px 28px rgba(10, 93, 87, 0.32);
+  }
+
+  .mobile-entry-fab.el-button > span {
+    display: none;
+  }
+
+  .mobile-entry-fab .el-icon {
+    font-size: 22px;
   }
 
   /* The floating button leaves its header container empty on mobile. */

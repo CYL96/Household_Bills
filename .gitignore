@@ -8,3 +8,13 @@ backend/server
 *.log
 .DS_Store
 /test/
+android/.gradle/
+android/local.properties
+android/**/build/
+android/release/
+*.jks
+*.keystore
+*.apk
+*.aab
+# Raw personal bill attachments
+/content_[0-9]*

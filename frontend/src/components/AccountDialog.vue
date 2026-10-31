@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { computed, nextTick, reactive, ref, watch } from 'vue'
-import { ElMessage, type FormInstance, type FormRules } from 'element-plus'
+import { ElMessage, ElMessageBox, type FormInstance, type FormRules } from 'element-plus'
 import { getErrorMessage } from '../api/client'
-import { createAccount, updateAccount } from '../api/accounts'
+import { createAccount, deleteAccount, updateAccount } from '../api/accounts'
 import type { Account, AccountPayload } from '../api/types'
 import { authState, familyMembers } from '../stores/auth'
 import { markDataChanged } from '../stores/data'
@@ -21,6 +21,7 @@ const emit = defineEmits<{
 
 const formRef = ref<FormInstance>()
 const saving = ref(false)
+const deleting = ref(false)
 const errorMessage = ref('')
 
 /** 下拉框不接受 null 作为选项值，用 0 代表“公共账户”，提交时还原为 null。 */
@@ -34,6 +35,7 @@ const form = reactive({
 
 const isEditing = computed(() => Boolean(props.account))
 const dialogTitle = computed(() => (isEditing.value ? '编辑资金账户' : '添加资金账户'))
+const busy = computed(() => saving.value || deleting.value)
 
 const ownerSelection = computed<number>({
   get: () => form.owner ?? PUBLIC_OWNER_VALUE,
@@ -158,7 +160,7 @@ function closeDialog(): void {
 }
 
 async function submit(): Promise<void> {
-  if (saving.value || !formRef.value) return
+  if (busy.value || !formRef.value) return
   errorMessage.value = ''
 
   let valid = false
@@ -167,7 +169,7 @@ async function submit(): Promise<void> {
   } catch {
     valid = false
   }
-  if (!valid) return
+  if (!valid || busy.value) return
 
   saving.value = true
   try {
@@ -199,6 +201,43 @@ async function submit(): Promise<void> {
     saving.value = false
   }
 }
+
+async function handleDelete(): Promise<void> {
+  const account = props.account
+  if (!account || busy.value) return
+
+  // 先锁定按钮状态，确认框打开期间不允许保存或重复触发删除。
+  deleting.value = true
+  try {
+    await ElMessageBox.confirm(
+      `删除账户“${account.name}”后无法恢复。只有没有任何收支或转账记录的账户才能删除；删除后，该账户当前余额将从家庭总余额中移除。`,
+      '删除账户',
+      {
+        confirmButtonText: '删除账户',
+        cancelButtonText: '取消',
+        type: 'warning',
+        confirmButtonClass: 'el-button--danger',
+      },
+    )
+  } catch {
+    deleting.value = false
+    return
+  }
+
+  errorMessage.value = ''
+  try {
+    await deleteAccount(account.id)
+    markDataChanged()
+    ElMessage.success('账户已删除')
+    emit('saved')
+    // 确认期间可能已切换账户：只关闭仍然显示被删除账户的弹窗。
+    if (props.account?.id === account.id) closeDialog()
+  } catch (error) {
+    errorMessage.value = getErrorMessage(error)
+  } finally {
+    deleting.value = false
+  }
+}
 </script>
 
 <template>
@@ -208,8 +247,8 @@ async function submit(): Promise<void> {
     width="500px"
     class="ledger-dialog"
     :close-on-click-modal="false"
-    :close-on-press-escape="!saving"
-    :show-close="!saving"
+    :close-on-press-escape="!busy"
+    :show-close="!busy"
   >
     <el-alert
       v-if="errorMessage"
@@ -274,8 +313,18 @@ async function submit(): Promise<void> {
 
     <template #footer>
       <div class="dialog-footer">
-        <el-button :disabled="saving" @click="closeDialog">取消</el-button>
-        <el-button type="primary" :loading="saving" @click="submit">
+        <el-button
+          v-if="isEditing"
+          class="account-delete-button"
+          type="danger"
+          :loading="deleting"
+          :disabled="saving"
+          @click="handleDelete"
+        >
+          删除账户
+        </el-button>
+        <el-button :disabled="busy" @click="closeDialog">取消</el-button>
+        <el-button type="primary" :loading="saving" :disabled="deleting" @click="submit">
           {{ isEditing ? '保存修改' : '添加账户' }}
         </el-button>
       </div>
@@ -295,6 +344,10 @@ async function submit(): Promise<void> {
 
 .owner-select {
   width: 100%;
+}
+
+.account-delete-button {
+  margin-right: auto;
 }
 
 .account-hint {

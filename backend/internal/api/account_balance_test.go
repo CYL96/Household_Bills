@@ -586,3 +586,193 @@ func TestAccountBalanceSerializesWithTransactionMutations(t *testing.T) {
 	expectAccountBalances(t, client, map[int64]string{sourceID: "90.00", targetID: "30.00"})
 	expectTotalBalance(t, client, "2026-10", "120.00")
 }
+
+func TestAccountDeleteEmptyWalletRemovesBalance(t *testing.T) {
+	env := newTestEnv(t)
+	client := env.adminClient(t)
+
+	kept := client.object(t, http.MethodPost, "/api/accounts/",
+		map[string]any{"name": "保留账户", "balance": "50.00"}, http.StatusCreated)
+	keptID := jsonInt64(t, kept["id"])
+	removed := client.object(t, http.MethodPost, "/api/accounts/",
+		map[string]any{"name": "待删账户", "balance": "123.45"}, http.StatusCreated)
+	removedID := jsonInt64(t, removed["id"])
+	expectTotalBalance(t, client, "2026-10", "173.45")
+
+	client.do(http.MethodDelete,
+		fmt.Sprintf("/api/accounts/%d/", removedID), nil).
+		expect(t, http.StatusNoContent)
+
+	accounts := client.array(t, http.MethodGet, "/api/accounts/", nil, http.StatusOK)
+	if len(accounts) != 1 || jsonInt64(t, accounts[0]["id"]) != keptID {
+		t.Fatalf("删除后账户列表错误: %s", mustJSON(t, accounts))
+	}
+	expectAccountBalances(t, client, map[int64]string{keptID: "50.00"})
+	expectTotalBalance(t, client, "2026-10", "50.00")
+	if got := env.count(t, "accounts"); got != 1 {
+		t.Fatalf("删除后账户数量 = %d，期望 1", got)
+	}
+}
+
+func TestAccountDeleteRejectsLedgerReferences(t *testing.T) {
+	env := newTestEnv(t)
+	client := env.adminClient(t)
+
+	create := func(name string) int64 {
+		t.Helper()
+		account := client.object(t, http.MethodPost, "/api/accounts/",
+			map[string]any{"name": name, "balance": "0.00"}, http.StatusCreated)
+		return jsonInt64(t, account["id"])
+	}
+	incomeAccountID := create("收入账户")
+	expenseAccountID := create("支出账户")
+	transferSourceID := create("转出账户")
+	transferTargetID := create("转入账户")
+	fundingID := create("资金来源账户")
+
+	client.object(t, http.MethodPost, "/api/transactions/", map[string]any{
+		"account": incomeAccountID, "kind": "income", "amount": "10.00",
+		"category": "工资", "date": "2026-10-01T00:00:00",
+	}, http.StatusCreated)
+	client.object(t, http.MethodPost, "/api/transactions/", map[string]any{
+		"account": expenseAccountID, "kind": "expense", "amount": "5.00",
+		"category": "餐饮", "date": "2026-10-02T00:00:00",
+	}, http.StatusCreated)
+	// The source account owns account_id while the destination owns
+	// transfer_account_id; both foreign keys must block deletion.
+	client.object(t, http.MethodPost, "/api/transactions/", map[string]any{
+		"account": transferSourceID, "kind": "transfer", "amount": "20.00",
+		"date": "2026-10-03T00:00:00", "transfer_account": fundingID,
+	}, http.StatusCreated)
+	client.object(t, http.MethodPost, "/api/transactions/", map[string]any{
+		"account": fundingID, "kind": "transfer", "amount": "7.00",
+		"date": "2026-10-04T00:00:00", "transfer_account": transferTargetID,
+	}, http.StatusCreated)
+
+	expectedBalances := map[int64]string{
+		incomeAccountID:  "10.00",
+		expenseAccountID: "-5.00",
+		transferSourceID: "-20.00",
+		transferTargetID: "7.00",
+		fundingID:        "13.00",
+	}
+	expectAccountBalances(t, client, expectedBalances)
+	expectTotalBalance(t, client, "2026-10", "5.00")
+
+	for _, accountID := range []int64{
+		incomeAccountID, expenseAccountID, transferSourceID, transferTargetID,
+	} {
+		response := client.do(http.MethodDelete,
+			fmt.Sprintf("/api/accounts/%d/", accountID), nil)
+		response.expect(t, http.StatusConflict)
+	}
+
+	// The cascade foreign keys must never have removed ledger rows.
+	if got := env.count(t, "transactions"); got != 4 {
+		t.Fatalf("删除被拒绝后交易数量 = %d，期望 4", got)
+	}
+	if got := env.count(t, "accounts"); got != 5 {
+		t.Fatalf("删除被拒绝后账户数量 = %d，期望 5", got)
+	}
+	expectAccountBalances(t, client, expectedBalances)
+	expectTotalBalance(t, client, "2026-10", "5.00")
+}
+
+func TestAccountDeleteScopingAndMiddleware(t *testing.T) {
+	env := newTestEnv(t)
+	admin := env.adminClient(t)
+
+	wallet := admin.object(t, http.MethodPost, "/api/accounts/",
+		map[string]any{"name": "管理员账户", "balance": "5.00"}, http.StatusCreated)
+	walletID := jsonInt64(t, wallet["id"])
+
+	for _, rawID := range []string{"0", "-3", "abc", "999999"} {
+		admin.do(http.MethodDelete, "/api/accounts/"+rawID+"/", nil).
+			expect(t, http.StatusNotFound)
+	}
+
+	_, bobID := env.seedUser(t, "乙家", "bob", strongPassword, false)
+	bob := env.loginUser(t, "bob", strongPassword)
+	bobWallet := bob.object(t, http.MethodPost, "/api/accounts/", map[string]any{
+		"name": "乙家账户", "balance": "25.00", "owner": bobID,
+	}, http.StatusCreated)
+	bobWalletID := jsonInt64(t, bobWallet["id"])
+
+	admin.do(http.MethodDelete,
+		fmt.Sprintf("/api/accounts/%d/", bobWalletID), nil).
+		expect(t, http.StatusNotFound)
+	bobAccounts := bob.array(t, http.MethodGet, "/api/accounts/", nil, http.StatusOK)
+	if len(bobAccounts) != 1 || jsonInt64(t, bobAccounts[0]["id"]) != bobWalletID {
+		t.Fatalf("跨家庭删除不应生效: %s", mustJSON(t, bobAccounts))
+	}
+
+	anonymous := newRawClient(t, env)
+	anonymous.do(http.MethodDelete,
+		fmt.Sprintf("/api/accounts/%d/", walletID), nil).
+		expect(t, http.StatusUnauthorized)
+
+	csrfClient := env.loginUser(t, adminUsername, strongPassword)
+	csrfClient.removeCookie(t, "csrftoken")
+	csrfClient.do(http.MethodDelete,
+		fmt.Sprintf("/api/accounts/%d/", walletID), nil).
+		expect(t, http.StatusForbidden)
+
+	if got := env.count(t, "accounts"); got != 2 {
+		t.Fatalf("被拒绝的删除改动了账户，实际 %d 个", got)
+	}
+
+	admin.do(http.MethodDelete,
+		fmt.Sprintf("/api/accounts/%d/", walletID), nil).
+		expect(t, http.StatusNoContent)
+	if accounts := admin.array(t, http.MethodGet, "/api/accounts/", nil, http.StatusOK); len(accounts) != 0 {
+		t.Fatalf("删除自己的空账户后列表应为空: %s", mustJSON(t, accounts))
+	}
+}
+
+func TestAccountDeleteWaitsForConcurrentLedgerMutation(t *testing.T) {
+	env := newTestEnv(t)
+	client := env.adminClient(t)
+
+	wallet := client.object(t, http.MethodPost, "/api/accounts/",
+		map[string]any{"name": "并发删除账户", "balance": "0.00"}, http.StatusCreated)
+	walletID := jsonInt64(t, wallet["id"])
+
+	// Hold the same wallet row lock every balance-changing writer uses. The
+	// delete must wait, then observe the ledger row committed before it ran
+	// instead of letting the cascade foreign key erase that row.
+	tx, ctx := beginAccountRowLock(t, env, walletID)
+	results := make(chan accountAsyncResult, 1)
+	go func() {
+		results <- attemptAccountRequest(client, http.MethodDelete,
+			fmt.Sprintf("/api/accounts/%d/", walletID), nil)
+	}()
+	waitForBlockedQuery(t, env)
+
+	var householdID, userID int64
+	if err := tx.QueryRow(ctx,
+		"SELECT household_id FROM accounts WHERE id = $1", walletID).
+		Scan(&householdID); err != nil {
+		t.Fatalf("读取账户家庭失败: %v", err)
+	}
+	if err := tx.QueryRow(ctx,
+		"SELECT id FROM users WHERE household_id = $1 ORDER BY id LIMIT 1", householdID).
+		Scan(&userID); err != nil {
+		t.Fatalf("读取家庭用户失败: %v", err)
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO transactions
+			(household_id, account_id, kind, amount_cents, category, tx_date, note, created_by, owner_user_id)
+		VALUES ($1, $2, 'income', 1000, '工资', DATE '2026-10-05', '', $3, $3)`,
+		householdID, walletID, userID); err != nil {
+		t.Fatalf("写入并发收入失败: %v", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("提交并发收入失败: %v", err)
+	}
+
+	awaitAccountResponse(t, ctx, results).expect(t, http.StatusConflict)
+	if got := env.count(t, "transactions"); got != 1 {
+		t.Fatalf("并发删除后交易数量 = %d，期望 1", got)
+	}
+	expectAccountBalances(t, client, map[int64]string{walletID: "10.00"})
+}

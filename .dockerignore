@@ -7,3 +7,10 @@ frontend/dist
 backend/household-bills
 backend/server
 *.log
+/android/
+*.apk
+*.aab
+*.jks
+*.keystore
+/test/
+/content_[0-9]*

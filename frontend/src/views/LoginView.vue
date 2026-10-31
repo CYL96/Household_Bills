@@ -15,6 +15,7 @@ const loginError = ref('')
 const loginForm = reactive({
   username: '',
   password: '',
+  remember: false,
 })
 
 const bootRetrying = ref(false)
@@ -60,6 +61,7 @@ async function handleLogin(): Promise<void> {
     await loginUser({
       username: loginForm.username.trim(),
       password: loginForm.password,
+      remember: loginForm.remember,
     })
     ElMessage.success('欢迎回来')
     await router.replace(safeRedirect())
@@ -91,40 +93,6 @@ async function retryBootstrap(): Promise<void> {
             <small>Household Ledger</small>
           </span>
         </div>
-
-        <div class="story-body">
-          <p class="story-eyebrow">共同记录 · 清楚生活</p>
-          <h1>把每一笔收支，<br />安放在同一个地方。</h1>
-          <p class="story-lead">
-            和家人共用一本清晰的账：记录日常开销、查看月度趋势、管理资金账户。
-          </p>
-
-          <ul class="story-points">
-            <li>
-              <span>01</span>
-              <div>
-                <strong>家庭共享</strong>
-                <small>每位成员独立登录，共同维护一本账。</small>
-              </div>
-            </li>
-            <li>
-              <span>02</span>
-              <div>
-                <strong>月度一目了然</strong>
-                <small>收入、支出、结余与分类趋势清楚呈现。</small>
-              </div>
-            </li>
-            <li>
-              <span>03</span>
-              <div>
-                <strong>仅成员可见</strong>
-                <small>家庭账目只对同一家庭的成员开放。</small>
-              </div>
-            </li>
-          </ul>
-        </div>
-
-        <p class="story-foot">每一笔日常，都值得被认真看见。</p>
       </div>
     </section>
 
@@ -136,9 +104,7 @@ async function retryBootstrap(): Promise<void> {
         </div>
 
         <header class="auth-card__header">
-          <p class="auth-card__eyebrow">家庭财务空间</p>
           <h1>欢迎回来</h1>
-          <p>登录后继续记录和查看家庭收支。</p>
         </header>
 
         <div v-if="authState.bootError" class="boot-alert" role="alert">
@@ -188,6 +154,17 @@ async function retryBootstrap(): Promise<void> {
             />
           </el-form-item>
 
+          <div class="remember-row">
+            <el-checkbox
+              v-model="loginForm.remember"
+              :disabled="loggingIn"
+              class="remember-checkbox"
+            >
+              记住登录（30 天）
+            </el-checkbox>
+            <span class="remember-hint">仅在个人设备上勾选</span>
+          </div>
+
           <el-alert
             v-if="loginError"
             class="form-alert"
@@ -209,12 +186,6 @@ async function retryBootstrap(): Promise<void> {
             登录家庭账本
           </el-button>
         </el-form>
-
-        <p class="auth-account-note" data-testid="login-admin-note">
-          还没有账号？<strong>联系管理员创建账号</strong>
-        </p>
-
-        <p class="auth-note">家庭账目仅成员可见 · 所有金额以人民币记录</p>
       </div>
     </section>
   </div>
@@ -327,82 +298,6 @@ async function retryBootstrap(): Promise<void> {
   text-transform: uppercase;
 }
 
-.story-body {
-  margin-top: auto;
-  padding: 44px 0;
-}
-
-.story-eyebrow {
-  margin-bottom: 16px;
-  color: #b9d9d2;
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.18em;
-}
-
-.story-body h1 {
-  font-family: var(--hb-display);
-  font-size: clamp(34px, 4.4vw, 52px);
-  font-weight: 600;
-  letter-spacing: 0.015em;
-  line-height: 1.35;
-  text-wrap: balance;
-}
-
-.story-lead {
-  max-width: 430px;
-  margin-top: 20px;
-  color: rgba(247, 243, 234, 0.72);
-  font-size: 14px;
-  line-height: 1.85;
-}
-
-.story-points {
-  display: flex;
-  flex-direction: column;
-  gap: 0;
-  margin: 36px 0 0;
-  padding: 0;
-  list-style: none;
-  border-top: 1px solid rgba(247, 243, 234, 0.16);
-}
-
-.story-points li {
-  display: flex;
-  gap: 18px;
-  padding: 16px 0;
-  border-bottom: 1px solid rgba(247, 243, 234, 0.12);
-}
-
-.story-points li > span {
-  padding-top: 2px;
-  color: rgba(247, 243, 234, 0.45);
-  font-size: 10px;
-  letter-spacing: 0.08em;
-}
-
-.story-points strong {
-  display: block;
-  font-size: 13px;
-  font-weight: 600;
-  letter-spacing: 0.02em;
-}
-
-.story-points small {
-  display: block;
-  margin-top: 2px;
-  color: rgba(247, 243, 234, 0.57);
-  font-size: 12px;
-  line-height: 1.65;
-}
-
-.story-foot {
-  color: rgba(247, 243, 234, 0.42);
-  font-family: var(--hb-display);
-  font-size: 12px;
-  letter-spacing: 0.08em;
-}
-
 .auth-main {
   display: flex;
   align-items: center;
@@ -447,25 +342,11 @@ async function retryBootstrap(): Promise<void> {
   margin-bottom: 22px;
 }
 
-.auth-card__eyebrow {
-  margin-bottom: 8px;
-  color: var(--hb-teal);
-  font-size: 10px;
-  font-weight: 600;
-  letter-spacing: 0.16em;
-}
-
 .auth-card__header h1 {
   font-family: var(--hb-display);
   font-size: 28px;
   font-weight: 600;
   letter-spacing: 0.01em;
-}
-
-.auth-card__header > p:last-child {
-  margin-top: 7px;
-  color: var(--hb-ink-soft);
-  font-size: 13px;
 }
 
 .boot-alert {
@@ -526,6 +407,33 @@ async function retryBootstrap(): Promise<void> {
   height: 40px;
 }
 
+.remember-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px 10px;
+  margin: -2px 0 16px;
+}
+
+.remember-row :deep(.el-checkbox) {
+  height: auto;
+  min-height: 24px;
+  color: var(--hb-ink-soft);
+  white-space: normal;
+}
+
+.remember-row :deep(.el-checkbox__label) {
+  padding-left: 8px;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.remember-hint {
+  color: var(--hb-ink-faint);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
 .form-alert {
   margin: 2px 0 16px;
 }
@@ -538,28 +446,6 @@ async function retryBootstrap(): Promise<void> {
   font-size: 14px;
   letter-spacing: 0.03em;
   box-shadow: 0 10px 24px rgba(15, 118, 110, 0.16);
-}
-
-.auth-account-note {
-  margin-top: 18px;
-  color: var(--hb-ink-faint);
-  font-size: 12px;
-  text-align: center;
-}
-
-.auth-account-note strong {
-  color: var(--hb-teal-dark);
-  font-weight: 600;
-}
-
-.auth-note {
-  margin-top: 22px;
-  padding-top: 18px;
-  color: var(--hb-ink-faint);
-  border-top: 1px solid var(--hb-line);
-  font-size: 10px;
-  letter-spacing: 0.04em;
-  text-align: center;
 }
 
 @media (max-width: 960px) {

@@ -18,6 +18,6 @@ WORKDIR /app
 COPY --from=backend /build/household-bills ./household-bills
 COPY --from=frontend /build/frontend/dist ./public
 USER ledger
-ENV LISTEN_ADDR=:8000 FRONTEND_DIST=/app/public
+ENV LISTEN_ADDR=:8000 FRONTEND_DIST=/app/public ANDROID_RELEASE_DIR=/app/android-release
 EXPOSE 8000
 CMD ["./household-bills"]

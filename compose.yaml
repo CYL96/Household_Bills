@@ -22,6 +22,13 @@ services:
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
       COOKIE_SECURE: ${COOKIE_SECURE:-true}
       ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-}
+    volumes:
+      - type: bind
+        source: "${ANDROID_RELEASE_HOST_DIR:-./android/release}"
+        target: /app/android-release
+        read_only: true
+        bind:
+          create_host_path: true
     depends_on:
       db:
         condition: service_healthy

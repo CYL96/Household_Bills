@@ -18,8 +18,13 @@ import (
 const (
 	sessionCookieName = "sessionid"
 	csrfCookieName    = "csrftoken"
-	sessionTTL        = 7 * 24 * time.Hour
-	authContextKey    = "household.auth"
+	// sessionTTL caps browser-session logins server-side. A remembered login
+	// uses rememberedSessionTTL for both the cookie and the database row.
+	sessionTTL           = 12 * time.Hour
+	rememberedSessionTTL = 30 * 24 * time.Hour
+	// csrfTTL keeps the original CSRF cookie lifetime unchanged.
+	csrfTTL        = 7 * 24 * time.Hour
+	authContextKey = "household.auth"
 )
 
 type authInfo struct {
@@ -194,17 +199,22 @@ func (a *API) ensureCSRFCookie(c *gin.Context) error {
 	return nil
 }
 
-func (a *API) setSessionCookie(c *gin.Context, token string, expires time.Time) {
-	http.SetCookie(c.Writer, &http.Cookie{
+func (a *API) setSessionCookie(c *gin.Context, token string, expires time.Time, persistent bool) {
+	cookie := &http.Cookie{
 		Name:     sessionCookieName,
 		Value:    token,
 		Path:     "/",
-		Expires:  expires.UTC(),
-		MaxAge:   int(sessionTTL.Seconds()),
 		HttpOnly: true,
 		Secure:   a.cfg.CookieSecure,
 		SameSite: http.SameSiteLaxMode,
-	})
+	}
+	// A browser-session cookie carries neither Expires nor MaxAge; only a
+	// remembered login persists, and then its lifetime matches the DB row.
+	if persistent {
+		cookie.Expires = expires.UTC()
+		cookie.MaxAge = int(time.Until(expires).Round(time.Second).Seconds())
+	}
+	http.SetCookie(c.Writer, cookie)
 }
 
 func (a *API) clearSessionCookie(c *gin.Context) {
@@ -225,8 +235,8 @@ func (a *API) setCSRFCookie(c *gin.Context, token string) {
 		Name:     csrfCookieName,
 		Value:    token,
 		Path:     "/",
-		Expires:  time.Now().UTC().Add(sessionTTL),
-		MaxAge:   int(sessionTTL.Seconds()),
+		Expires:  time.Now().UTC().Add(csrfTTL),
+		MaxAge:   int(csrfTTL.Seconds()),
 		HttpOnly: false,
 		Secure:   a.cfg.CookieSecure,
 		SameSite: http.SameSiteLaxMode,
@@ -251,10 +261,17 @@ func hashToken(token string) []byte {
 	return sum[:]
 }
 
-func generateSession() (token string, tokenHash []byte, expires time.Time, err error) {
+func sessionTTLFor(remember bool) time.Duration {
+	if remember {
+		return rememberedSessionTTL
+	}
+	return sessionTTL
+}
+
+func generateSession(ttl time.Duration) (token string, tokenHash []byte, expires time.Time, err error) {
 	token, err = newRandomToken(32)
 	if err != nil {
 		return "", nil, time.Time{}, err
 	}
-	return token, hashToken(token), time.Now().UTC().Add(sessionTTL), nil
+	return token, hashToken(token), time.Now().UTC().Add(ttl), nil
 }

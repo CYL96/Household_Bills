@@ -15,6 +15,7 @@ import (
 type loginRequest struct {
 	Username string `json:"username"`
 	Password string `json:"password"`
+	Remember bool   `json:"remember"`
 }
 
 func (a *API) handleMe(c *gin.Context) {
@@ -84,7 +85,8 @@ func (a *API) handleLogin(c *gin.Context) {
 		abortDetail(c, http.StatusInternalServerError, "服务器内部错误。")
 		return
 	}
-	sessionToken, sessionHash, sessionExpires, err := generateSession()
+	remember := request.Remember
+	sessionToken, sessionHash, sessionExpires, err := generateSession(sessionTTLFor(remember))
 	if err != nil {
 		a.logger.Printf("生成会话失败: %v", err)
 		abortDetail(c, http.StatusInternalServerError, "服务器内部错误。")
@@ -104,7 +106,7 @@ func (a *API) handleLogin(c *gin.Context) {
 		return
 	}
 
-	a.setSessionCookie(c, sessionToken, sessionExpires)
+	a.setSessionCookie(c, sessionToken, sessionExpires, remember)
 	c.JSON(http.StatusOK, me)
 }
 

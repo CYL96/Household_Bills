@@ -39,6 +39,16 @@ const router = createRouter({
           component: () => import('../views/MembersView.vue'),
           meta: { title: '家庭成员', requiresAuth: true },
         },
+        {
+          path: 'statistics',
+          redirect: '/statistics/reports',
+        },
+        {
+          path: 'statistics/reports',
+          name: 'reports',
+          component: () => import('../views/ReportsView.vue'),
+          meta: { title: '报表', requiresAuth: true },
+        },
       ],
     },
     {

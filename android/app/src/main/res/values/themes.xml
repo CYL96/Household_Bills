@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.HouseholdBills.Base" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:colorPrimary">@color/teal_600</item>
+        <item name="android:colorPrimaryDark">@color/teal_800</item>
+        <item name="android:colorAccent">@color/teal_500</item>
+        <item name="android:windowBackground">@color/app_background</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:windowLightStatusBar">true</item>
+        <item name="android:navigationBarColor">@color/teal_800</item>
+    </style>
+
+    <style name="Theme.HouseholdBills" parent="Theme.HouseholdBills.Base" />
+</resources>

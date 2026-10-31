@@ -22,6 +22,7 @@ export interface MeResponse {
 export interface LoginPayload {
   username: string
   password: string
+  remember: boolean
 }
 
 export interface CreateUserPayload {

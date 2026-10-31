@@ -20,7 +20,13 @@ import { listAccounts } from '../api/accounts'
 import { getErrorMessage } from '../api/client'
 import { getSummary } from '../api/summary'
 import type { Account, Summary, TransactionKind } from '../api/types'
+import {
+  categoryState,
+  ensureCategories,
+  readCategoryEntries,
+} from '../stores/categories'
 import { dataVersion } from '../stores/data'
+import { aggregateTopLevelCategories } from '../utils/categoryStatistics'
 import {
   currentMonth,
   formatAxisAmount,
@@ -51,8 +57,37 @@ function emptySummary(forMonth: string): Summary {
 
 const summary = ref<Summary>(emptySummary(month.value))
 
+type CategoryMode = 'all' | 'top'
+
+const categoryMode = ref<CategoryMode>('all')
+
 const monthLabel = computed(() => formatMonthLabel(month.value))
-const categories = computed(() => summary.value.categories)
+const expenseEntries = computed(() => readCategoryEntries('expense'))
+const categoriesReady = computed(() => expenseEntries.value.length > 0)
+const effectiveCategoryMode = computed<CategoryMode>(() =>
+  categoryMode.value === 'top' && categoriesReady.value ? 'top' : 'all',
+)
+const categories = computed(() =>
+  effectiveCategoryMode.value === 'top'
+    ? aggregateTopLevelCategories(
+        summary.value.categories,
+        expenseEntries.value,
+      )
+    : summary.value.categories,
+)
+const categorySubtitle = computed(
+  () =>
+    `${monthLabel.value}${
+      effectiveCategoryMode.value === 'top' ? '按一级分类汇总' : '按所有分类'
+    }的支出占比`,
+)
+const categoryModeHint = computed(() => {
+  if (categoriesReady.value) return ''
+  return (
+    categoryState.error ??
+    (categoryState.loading ? '分类设置加载中' : '家庭分类设置尚未加载')
+  )
+})
 const daily = computed(() => summary.value.daily)
 const noAccounts = computed(() => accounts.value.length === 0)
 const hasMonthEntries = computed(() => summary.value.daily.length > 0)
@@ -80,6 +115,7 @@ async function load(): Promise<void> {
 }
 
 onMounted(() => {
+  void ensureCategories()
   void load()
 })
 
@@ -239,7 +275,9 @@ const categoryChartLabel = computed(() => {
     return `${monthLabel.value}暂无支出分类数据`
   }
   const names = categories.value.map((item) => item.category).join('、')
-  return `${monthLabel.value}支出分类环形图，支出合计 ${formatMoney(
+  const modeLabel =
+    effectiveCategoryMode.value === 'top' ? '一级分类汇总' : '所有分类'
+  return `${monthLabel.value}支出分类环形图（${modeLabel}），支出合计 ${formatMoney(
     summary.value.expense,
   )}，分类为：${names}`
 })
@@ -278,6 +316,8 @@ const trendChartLabel = computed(() => {
           type="primary"
           :icon="Plus"
           class="mobile-entry-fab"
+          aria-label="记一笔"
+          title="记一笔"
           @click="goNewTransaction('expense')"
         >
           记一笔
@@ -445,12 +485,42 @@ const trendChartLabel = computed(() => {
           <header class="section-head">
             <div>
               <h3>支出分类</h3>
-              <p>{{ monthLabel }}每一类支出的占比</p>
+              <p>{{ categorySubtitle }}</p>
             </div>
             <span v-if="categories.length" class="chart-total money-number">
               {{ formatMoney(summary.expense) }}
             </span>
           </header>
+
+          <div class="category-mode" role="group" aria-label="支出分类统计口径">
+            <button
+              type="button"
+              class="category-mode__button"
+              :class="{ 'is-active': effectiveCategoryMode === 'top' }"
+              :aria-pressed="effectiveCategoryMode === 'top'"
+              :disabled="!categoriesReady"
+              :title="categoriesReady ? undefined : categoryModeHint"
+              @click="categoryMode = 'top'"
+            >
+              一级分类
+            </button>
+            <button
+              type="button"
+              class="category-mode__button"
+              :class="{ 'is-active': effectiveCategoryMode === 'all' }"
+              :aria-pressed="effectiveCategoryMode === 'all'"
+              @click="categoryMode = 'all'"
+            >
+              所有分类
+            </button>
+            <span
+              v-if="categoryModeHint"
+              class="category-mode__hint"
+              role="status"
+            >
+              {{ categoryModeHint }}
+            </span>
+          </div>
 
           <EmptyState
             v-if="categories.length === 0"
@@ -761,6 +831,61 @@ const trendChartLabel = computed(() => {
   padding-top: 5px;
   color: var(--hb-ink-faint);
   font-size: 11px;
+}
+
+.category-mode {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+
+.category-mode__button {
+  min-height: 28px;
+  padding: 3px 11px;
+  color: var(--hb-ink-soft);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  background: var(--hb-bg);
+  border: 1px solid var(--hb-line);
+  border-radius: 999px;
+  cursor: pointer;
+  appearance: none;
+  transition:
+    color 0.16s ease,
+    background-color 0.16s ease,
+    border-color 0.16s ease;
+}
+
+.category-mode__button:hover:not(:disabled) {
+  color: var(--hb-ink);
+  border-color: var(--hb-line-strong);
+}
+
+.category-mode__button.is-active {
+  color: var(--hb-teal-dark);
+  background: var(--hb-teal-soft);
+  border-color: var(--hb-teal-soft);
+}
+
+.category-mode__button:focus-visible {
+  outline: 2px solid var(--hb-teal);
+  outline-offset: 2px;
+}
+
+.category-mode__button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.category-mode__hint {
+  flex: 1 1 140px;
+  min-width: 0;
+  color: var(--hb-ink-faint);
+  font-size: 11px;
+  line-height: 1.5;
 }
 
 .overview-foot {
