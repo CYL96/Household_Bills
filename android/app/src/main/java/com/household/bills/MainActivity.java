@@ -64,9 +64,13 @@ import java.util.Map;
 /**
  * Single-activity shell for the household ledger web application.
  *
- * <p>The WebView owns the content area below a 48dp native toolbar. The
- * toolbar's right-hand "设置" action opens a native server-address screen that
- * overlays only the content area, never the page itself.</p>
+ * <p>In the normal web state the page owns the whole content area: there is
+ * no native top bar. The page renders its own header and, when it needs the
+ * native server-address screen, uses an in-page link to
+ * {@code household-bills://settings}. The native shell accepts that link only
+ * for the current page after a real user gesture, then shows the settings
+ * screen with a native 48dp toolbar and a back action. The error screen keeps
+ * its own retry/settings buttons and is shown without any native top bar.</p>
  *
  * <p>Security boundaries: only a single configured HTTP(S) origin is loaded;
  * cross-origin HTTP(S) navigations go to an external browser; other schemes
@@ -78,6 +82,17 @@ public class MainActivity extends Activity {
     private static final String PREFS_NAME = "household_bills";
     private static final String PREF_SERVER_ORIGIN = "server_origin";
     private static final String PREF_PENDING_CLEANUP = "pending_origin_cleanup";
+
+    /**
+     * Exact user-agent token the web page checks for (as a whitespace-separated
+     * token) to decide whether to render its native-settings entry point.
+     */
+    private static final String APP_WEBVIEW_UA_TOKEN = "HouseholdBillsApp/1";
+    /**
+     * In-page link target that asks this activity to open the native settings
+     * screen. It is intercepted, never loaded and never registered as a deep link.
+     */
+    private static final String SETTINGS_URI = "household-bills://settings";
 
     private static final String KEY_SAVED_ORIGIN = "saved_origin";
     private static final String KEY_VIEW_ORIGIN = "saved_view_origin";
@@ -120,10 +135,9 @@ public class MainActivity extends Activity {
     private String committedOrigin;
 
     private FrameLayout root;
+    private FrameLayout toolbarWrap;
     private FrameLayout contentFrame;
     private WebView webView;
-    private TextView toolbarTitle;
-    private TextView settingsAction;
     private ProgressBar progressBar;
 
     private ScrollView settingsView;
@@ -301,7 +315,9 @@ public class MainActivity extends Activity {
         column.setOrientation(LinearLayout.VERTICAL);
         column.setBackgroundColor(COLOR_SURFACE);
 
-        FrameLayout toolbarWrap = new FrameLayout(this);
+        // Only the settings screen uses this native 48dp toolbar. The web and
+        // error states hide it so the page or error screen owns the full area.
+        toolbarWrap = new FrameLayout(this);
         toolbarWrap.setBackgroundColor(COLOR_SURFACE);
 
         LinearLayout toolbar = new LinearLayout(this);
@@ -309,26 +325,27 @@ public class MainActivity extends Activity {
         toolbar.setGravity(Gravity.CENTER_VERTICAL);
         toolbar.setPadding(dp(8), 0, dp(8), 0);
 
-        toolbarTitle = makeText("家庭账本", 18, COLOR_TEXT, true);
+        TextView backAction = makeText("返回", 15, COLOR_TEAL_DARK, true);
+        backAction.setGravity(Gravity.CENTER);
+        backAction.setMinWidth(dp(56));
+        backAction.setMinHeight(dp(48));
+        backAction.setPadding(dp(12), 0, dp(12), 0);
+        backAction.setContentDescription("返回");
+        backAction.setBackground(selectableBorderless());
+        backAction.setOnClickListener(v -> {
+            if (!switchingOrigin) {
+                cancelSettings();
+            }
+        });
+        toolbar.addView(backAction,
+                new LinearLayout.LayoutParams(WRAP, MATCH));
+
+        TextView toolbarTitle = makeText("设置", 18, COLOR_TEXT, true);
         toolbarTitle.setSingleLine(true);
         toolbarTitle.setGravity(Gravity.CENTER_VERTICAL);
         toolbarTitle.setPadding(dp(8), 0, dp(8), 0);
         toolbar.addView(toolbarTitle,
                 new LinearLayout.LayoutParams(0, MATCH, 1f));
-
-        settingsAction = makeText("设置", 15, COLOR_TEAL_DARK, false);
-        settingsAction.setGravity(Gravity.CENTER);
-        settingsAction.setMinWidth(dp(56));
-        settingsAction.setPadding(dp(12), 0, dp(12), 0);
-        settingsAction.setContentDescription("服务器设置");
-        settingsAction.setBackground(selectableBorderless());
-        settingsAction.setOnClickListener(v -> {
-            if (state == STATE_WEB && !switchingOrigin) {
-                enterSettings(STATE_WEB, true);
-            }
-        });
-        toolbar.addView(settingsAction,
-                new LinearLayout.LayoutParams(WRAP, MATCH));
 
         toolbarWrap.addView(toolbar, new FrameLayout.LayoutParams(MATCH, MATCH));
 
@@ -336,19 +353,6 @@ public class MainActivity extends Activity {
         divider.setBackgroundColor(COLOR_DIVIDER);
         toolbarWrap.addView(divider,
                 new FrameLayout.LayoutParams(MATCH, dp(1), Gravity.BOTTOM));
-
-        progressBar = new ProgressBar(this, null,
-                android.R.attr.progressBarStyleHorizontal);
-        progressBar.setIndeterminate(false);
-        progressBar.setMax(100);
-        progressBar.setProgress(0);
-        progressBar.setMinimumHeight(0);
-        progressBar.setPadding(0, 0, 0, 0);
-        progressBar.setProgressTintList(ColorStateList.valueOf(COLOR_TEAL));
-        progressBar.setProgressBackgroundTintList(ColorStateList.valueOf(COLOR_TEAL_PALE));
-        progressBar.setVisibility(View.GONE);
-        toolbarWrap.addView(progressBar,
-                new FrameLayout.LayoutParams(MATCH, dp(2), Gravity.BOTTOM));
 
         column.addView(toolbarWrap, new LinearLayout.LayoutParams(MATCH, dp(48)));
 
@@ -367,6 +371,21 @@ public class MainActivity extends Activity {
         errorView = buildErrorView();
         errorView.setVisibility(View.GONE);
         contentFrame.addView(errorView, new FrameLayout.LayoutParams(MATCH, MATCH));
+
+        // A 2dp loading line pinned to the top of the content area: it never
+        // takes a full row and is hidden while the native screens are shown.
+        progressBar = new ProgressBar(this, null,
+                android.R.attr.progressBarStyleHorizontal);
+        progressBar.setIndeterminate(false);
+        progressBar.setMax(100);
+        progressBar.setProgress(0);
+        progressBar.setMinimumHeight(0);
+        progressBar.setPadding(0, 0, 0, 0);
+        progressBar.setProgressTintList(ColorStateList.valueOf(COLOR_TEAL));
+        progressBar.setProgressBackgroundTintList(ColorStateList.valueOf(COLOR_TEAL_PALE));
+        progressBar.setVisibility(View.GONE);
+        contentFrame.addView(progressBar,
+                new FrameLayout.LayoutParams(MATCH, dp(2), Gravity.TOP));
 
         root.addView(column, new FrameLayout.LayoutParams(MATCH, MATCH));
         setContentView(root);
@@ -687,6 +706,20 @@ public class MainActivity extends Activity {
         settings.setGeolocationEnabled(false);
         settings.setSaveFormData(false);
 
+        // Capability hint only: the page renders its settings entry point when
+        // this exact whitespace-separated token is present. Nothing about the
+        // native state is exposed through it, and the page cannot read or change
+        // the configured origin.
+        String userAgent = settings.getUserAgentString();
+        if (userAgent == null) {
+            userAgent = "";
+        }
+        if (!hasUserAgentToken(userAgent)) {
+            settings.setUserAgentString(userAgent.isEmpty()
+                    ? APP_WEBVIEW_UA_TOKEN
+                    : userAgent + " " + APP_WEBVIEW_UA_TOKEN);
+        }
+
         CookieManager cookieManager = CookieManager.getInstance();
         cookieManager.setAcceptCookie(!switchingOrigin);
         cookieManager.setAcceptThirdPartyCookies(webView, false);
@@ -694,6 +727,19 @@ public class MainActivity extends Activity {
         webView.setWebViewClient(new LedgerWebViewClient(webViewGeneration));
         webView.setWebChromeClient(new LedgerChromeClient(webViewGeneration));
         webView.setOverScrollMode(View.OVER_SCROLL_IF_CONTENT_SCROLLS);
+    }
+
+    /** True when the user agent already carries the token as a whole token. */
+    private static boolean hasUserAgentToken(String userAgent) {
+        if (userAgent == null) {
+            return false;
+        }
+        for (String token : userAgent.trim().split("\\s+")) {
+            if (APP_WEBVIEW_UA_TOKEN.equals(token)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private final class LedgerWebViewClient extends WebViewClient {
@@ -717,7 +763,12 @@ public class MainActivity extends Activity {
             if (request == null || request.getUrl() == null) {
                 return true;
             }
-            return handleNavigation(request.getUrl().toString(), request.isForMainFrame());
+            String url = request.getUrl().toString();
+            if (SETTINGS_URI.equals(url)) {
+                handleSettingsLink(view, request);
+                return true;
+            }
+            return handleNavigation(url, request.isForMainFrame());
         }
 
         @Override
@@ -726,7 +777,33 @@ public class MainActivity extends Activity {
             if (!isCurrent(view)) {
                 return true;
             }
+            // This legacy callback carries neither frame nor gesture
+            // information, so it must never open the native settings screen.
+            // handleNavigation() blocks every custom scheme.
             return handleNavigation(url, true);
+        }
+
+        /**
+         * Opens the native settings screen only for a real user click on the
+         * exact settings URI from the current page. The URI must belong to the
+         * main frame, the page must still be the committed origin, and no origin
+         * switch may be in progress. Anything else is silently ignored.
+         */
+        private void handleSettingsLink(WebView view, WebResourceRequest request) {
+            if (!request.isForMainFrame()
+                    || !request.hasGesture()
+                    || state != STATE_WEB
+                    || switchingOrigin) {
+                return;
+            }
+            if (!isCurrent(view) || committedOrigin == null) {
+                return;
+            }
+            String pageOrigin = ServerAddress.originOf(view.getUrl());
+            if (pageOrigin == null || !committedOrigin.equals(pageOrigin)) {
+                return;
+            }
+            enterSettings(STATE_WEB, true);
         }
 
         @Override
@@ -758,7 +835,9 @@ public class MainActivity extends Activity {
             currentMainFrameUrl = url;
             mainFrameLoading = true;
             progressBar.setProgress(5);
-            progressBar.setVisibility(View.VISIBLE);
+            if (state == STATE_WEB) {
+                progressBar.setVisibility(View.VISIBLE);
+            }
         }
 
         @Override
@@ -948,7 +1027,9 @@ public class MainActivity extends Activity {
                 return;
             }
             progressBar.setProgress(newProgress);
-            progressBar.setVisibility(View.VISIBLE);
+            if (state == STATE_WEB) {
+                progressBar.setVisibility(View.VISIBLE);
+            }
         }
 
         @Override
@@ -1043,20 +1124,28 @@ public class MainActivity extends Activity {
     // ------------------------------------------------------------------
 
     private void updateChrome() {
-        if (toolbarTitle == null) {
+        if (toolbarWrap == null) {
             return;
         }
-        toolbarTitle.setText(state == STATE_SETTINGS ? "设置" : "家庭账本");
-        settingsAction.setVisibility(state == STATE_WEB ? View.VISIBLE : View.GONE);
-        settingsAction.setEnabled(!switchingOrigin);
+        boolean settingsVisible = state == STATE_SETTINGS;
+        // The web page and the error screen never get the native toolbar.
+        toolbarWrap.setVisibility(settingsVisible ? View.VISIBLE : View.GONE);
         if (webView != null) {
             webView.setVisibility(state == STATE_WEB ? View.VISIBLE : View.INVISIBLE);
         }
         if (settingsView != null) {
-            settingsView.setVisibility(state == STATE_SETTINGS ? View.VISIBLE : View.GONE);
+            settingsView.setVisibility(settingsVisible ? View.VISIBLE : View.GONE);
         }
         if (errorView != null) {
             errorView.setVisibility(state == STATE_ERROR ? View.VISIBLE : View.GONE);
+        }
+        if (progressBar != null) {
+            if (!settingsVisible && state == STATE_WEB && mainFrameLoading) {
+                progressBar.setVisibility(View.VISIBLE);
+            } else if (state != STATE_WEB) {
+                // Never draw the loading line over the native settings/error UI.
+                progressBar.setVisibility(View.GONE);
+            }
         }
         if (cacheRefreshSection != null) {
             boolean hasSavedOrigin = committedOrigin != null;
@@ -1072,6 +1161,7 @@ public class MainActivity extends Activity {
         if (switchingOrigin) {
             return;
         }
+        hideKeyboard();
         settingsReturnState = returnState == STATE_ERROR ? STATE_ERROR : STATE_WEB;
         if (resetDraft) {
             addressInput.setText(committedOrigin != null ? committedOrigin : "");
@@ -1344,7 +1434,11 @@ public class MainActivity extends Activity {
         mainFrameLoading = true;
         currentMainFrameUrl = committedOrigin;
         progressBar.setProgress(5);
-        progressBar.setVisibility(View.VISIBLE);
+        if (state == STATE_WEB) {
+            // A restore may load while the settings screen is showing; the
+            // loading line must not be drawn over native UI.
+            progressBar.setVisibility(View.VISIBLE);
+        }
         if (bypassCaches) {
             Map<String, String> headers = new HashMap<>();
             headers.put("Cache-Control", "no-cache");

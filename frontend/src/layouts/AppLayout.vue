@@ -12,6 +12,7 @@ import {
   Tickets,
 } from '@element-plus/icons-vue'
 import AppNav from '../components/AppNav.vue'
+import AppSettingsButton from '../components/AppSettingsButton.vue'
 import { getErrorMessage } from '../api/client'
 import UserAvatar from '../components/UserAvatar.vue'
 import UserProfileDialog from '../components/UserProfileDialog.vue'
@@ -143,6 +144,7 @@ function handleUserCommand(command: string | number | object): void {
               </el-dropdown-menu>
             </template>
           </el-dropdown>
+          <AppSettingsButton />
         </div>
       </header>
 
@@ -320,7 +322,10 @@ function handleUserCommand(command: string | number | object): void {
 }
 
 .topbar__user {
+  display: flex;
   flex: 0 0 auto;
+  align-items: center;
+  gap: 6px;
 }
 
 .user-chip {

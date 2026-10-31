@@ -4,6 +4,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, type FormInstance, type FormRules } from 'element-plus'
 import { Lock, User } from '@element-plus/icons-vue'
 import { getErrorMessage } from '../api/client'
+import AppSettingsButton from '../components/AppSettingsButton.vue'
 import { authState, bootstrapAuth, loginUser } from '../stores/auth'
 
 const route = useRoute()
@@ -105,6 +106,7 @@ async function retryBootstrap(): Promise<void> {
 
         <header class="auth-card__header">
           <h1>欢迎回来</h1>
+          <AppSettingsButton />
         </header>
 
         <div v-if="authState.bootError" class="boot-alert" role="alert">
@@ -339,6 +341,10 @@ async function retryBootstrap(): Promise<void> {
 }
 
 .auth-card__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
   margin-bottom: 22px;
 }
 

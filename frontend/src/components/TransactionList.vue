@@ -7,6 +7,9 @@ import { deleteTransaction } from '../api/transactions'
 import type { Account, Transaction, TransactionKind } from '../api/types'
 import { useMediaQuery } from '../composables/useMediaQuery'
 import { markDataChanged } from '../stores/data'
+import { readCategoryEntries } from '../stores/categories'
+import { categoryIcon } from '../utils/categoryIcons'
+import { entryMatchesName } from '../utils/categoryPreferences'
 import { formatDateTimeLabel, formatSignedAmount } from '../utils/format'
 import EmptyState from './EmptyState.vue'
 import TransactionDialog from './TransactionDialog.vue'
@@ -51,6 +54,14 @@ const deletingId = ref<number | null>(null)
 const editDisabled = computed(
   () => props.editingDisabled || props.accounts.length === 0,
 )
+
+function iconForCategory(name: string, kind: TransactionKind) {
+  if (kind === 'transfer') return categoryIcon(name)
+  const entry = readCategoryEntries(kind).find((candidate) =>
+    entryMatchesName(candidate, name),
+  )
+  return categoryIcon(entry?.name ?? name, entry?.icon)
+}
 
 function kindLabel(kind: TransactionKind): string {
   return KIND_LABELS[kind]
@@ -185,7 +196,12 @@ function handleViewBills(selection: {
                 aria-hidden="true"
               ></span>
               <div class="tx-card__heading">
-                <h4>{{ transaction.category }}</h4>
+                <h4>
+                  <el-icon class="category-icon" aria-hidden="true">
+                    <component :is="iconForCategory(transaction.category, transaction.kind)" />
+                  </el-icon>
+                  <span>{{ transaction.category }}</span>
+                </h4>
                 <p>
                   <span class="tx-card__time">{{ formatDateTimeLabel(transaction.date) }}</span>
                   <span aria-hidden="true"> · </span>
@@ -265,7 +281,12 @@ function handleViewBills(selection: {
 
       <el-table-column label="分类" min-width="118">
         <template #default="{ row }">
-          <span class="category-cell">{{ row.category }}</span>
+          <span class="category-cell">
+            <el-icon class="category-icon" aria-hidden="true">
+              <component :is="iconForCategory(row.category, row.kind)" />
+            </el-icon>
+            <span>{{ row.category }}</span>
+          </span>
         </template>
       </el-table-column>
 
@@ -410,7 +431,16 @@ function handleViewBills(selection: {
 }
 
 .category-cell {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
   font-weight: 500;
+}
+
+.category-icon {
+  flex: 0 0 auto;
+  color: var(--hb-ink-soft);
+  font-size: 14px;
 }
 
 .account-cell {
@@ -549,9 +579,16 @@ function handleViewBills(selection: {
 }
 
 .tx-card__heading h4 {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
   overflow-wrap: anywhere;
   font-size: 14px;
   font-weight: 600;
+}
+
+.tx-card__heading h4 .category-icon {
+  margin-top: 1px;
 }
 
 .tx-card__heading p {
