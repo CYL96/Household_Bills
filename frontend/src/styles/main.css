@@ -194,12 +194,6 @@ svg {
   color: var(--hb-ink);
 }
 
-.page-heading__subtitle {
-  margin-top: 6px;
-  color: var(--hb-ink-soft);
-  font-size: 14px;
-}
-
 .heading-actions {
   display: flex;
   flex-wrap: wrap;

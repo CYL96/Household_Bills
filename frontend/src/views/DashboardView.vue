@@ -3,11 +3,8 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import {
   ArrowRight,
-  Minus,
-  PieChart,
   Plus,
   RefreshRight,
-  Switch,
   TrendCharts,
   Wallet,
   WarningFilled,
@@ -20,13 +17,7 @@ import { listAccounts } from '../api/accounts'
 import { getErrorMessage } from '../api/client'
 import { getSummary } from '../api/summary'
 import type { Account, Summary, TransactionKind } from '../api/types'
-import {
-  categoryState,
-  ensureCategories,
-  readCategoryEntries,
-} from '../stores/categories'
 import { dataVersion } from '../stores/data'
-import { aggregateTopLevelCategories } from '../utils/categoryStatistics'
 import {
   currentMonth,
   formatAxisAmount,
@@ -57,37 +48,7 @@ function emptySummary(forMonth: string): Summary {
 
 const summary = ref<Summary>(emptySummary(month.value))
 
-type CategoryMode = 'all' | 'top'
-
-const categoryMode = ref<CategoryMode>('all')
-
 const monthLabel = computed(() => formatMonthLabel(month.value))
-const expenseEntries = computed(() => readCategoryEntries('expense'))
-const categoriesReady = computed(() => expenseEntries.value.length > 0)
-const effectiveCategoryMode = computed<CategoryMode>(() =>
-  categoryMode.value === 'top' && categoriesReady.value ? 'top' : 'all',
-)
-const categories = computed(() =>
-  effectiveCategoryMode.value === 'top'
-    ? aggregateTopLevelCategories(
-        summary.value.categories,
-        expenseEntries.value,
-      )
-    : summary.value.categories,
-)
-const categorySubtitle = computed(
-  () =>
-    `${monthLabel.value}${
-      effectiveCategoryMode.value === 'top' ? '按一级分类汇总' : '按所有分类'
-    }的支出占比`,
-)
-const categoryModeHint = computed(() => {
-  if (categoriesReady.value) return ''
-  return (
-    categoryState.error ??
-    (categoryState.loading ? '分类设置加载中' : '家庭分类设置尚未加载')
-  )
-})
 const daily = computed(() => summary.value.daily)
 const noAccounts = computed(() => accounts.value.length === 0)
 const hasMonthEntries = computed(() => summary.value.daily.length > 0)
@@ -115,7 +76,6 @@ async function load(): Promise<void> {
 }
 
 onMounted(() => {
-  void ensureCategories()
   void load()
 })
 
@@ -141,69 +101,6 @@ function goNewAccount(): void {
 function goTransactions(): void {
   void router.push({ name: 'transactions', query: { month: month.value } })
 }
-
-const CATEGORY_COLORS = [
-  '#0f766e',
-  '#bd6a3c',
-  '#c9a65a',
-  '#5f8a78',
-  '#8a6f4d',
-  '#6b7f8c',
-  '#b5695a',
-  '#8c7aa9',
-  '#7c9a92',
-  '#a37b5c',
-  '#557a74',
-  '#d0b49a',
-]
-
-const categoryOption = computed<EChartsCoreOption>(() => ({
-  color: CATEGORY_COLORS,
-  tooltip: {
-    trigger: 'item',
-    confine: true,
-    backgroundColor: 'rgba(38, 34, 28, 0.94)',
-    borderWidth: 0,
-    textStyle: { color: '#fffdf8', fontSize: 12 },
-    valueFormatter: (value: unknown) => formatMoney(Number(value)),
-  },
-  legend: {
-    type: 'scroll',
-    bottom: 0,
-    icon: 'circle',
-    itemWidth: 8,
-    itemHeight: 8,
-    itemGap: 14,
-    textStyle: { color: '#6d655a', fontSize: 12 },
-    pageIconColor: '#0f766e',
-    pageIconInactiveColor: '#cfc6b8',
-    pageTextStyle: { color: '#6d655a', fontSize: 11 },
-  },
-  series: [
-    {
-      name: '支出分类',
-      type: 'pie',
-      radius: ['46%', '68%'],
-      center: ['50%', '43%'],
-      avoidLabelOverlap: true,
-      itemStyle: {
-        borderColor: '#fffdf8',
-        borderWidth: 3,
-        borderRadius: 5,
-      },
-      label: { show: false },
-      labelLine: { show: false },
-      emphasis: {
-        scale: true,
-        scaleSize: 6,
-      },
-      data: categories.value.map((item) => ({
-        name: item.category,
-        value: toNumber(item.amount),
-      })),
-    },
-  ],
-}))
 
 const trendOption = computed<EChartsCoreOption>(() => ({
   color: ['#0f766e', '#bd6a3c'],
@@ -270,18 +167,6 @@ const trendOption = computed<EChartsCoreOption>(() => ({
   ],
 }))
 
-const categoryChartLabel = computed(() => {
-  if (categories.value.length === 0) {
-    return `${monthLabel.value}暂无支出分类数据`
-  }
-  const names = categories.value.map((item) => item.category).join('、')
-  const modeLabel =
-    effectiveCategoryMode.value === 'top' ? '一级分类汇总' : '所有分类'
-  return `${monthLabel.value}支出分类环形图（${modeLabel}），支出合计 ${formatMoney(
-    summary.value.expense,
-  )}，分类为：${names}`
-})
-
 const trendChartLabel = computed(() => {
   if (daily.value.length === 0) {
     return `${monthLabel.value}暂无每日收支数据`
@@ -294,11 +179,7 @@ const trendChartLabel = computed(() => {
   <div class="dashboard has-mobile-fab">
     <div class="page-heading">
       <div class="page-heading__copy">
-        <p class="page-eyebrow">家庭财务一览</p>
         <h2>{{ monthLabel }} · 收支概览</h2>
-        <p class="page-heading__subtitle">
-          全部账户与流水由家庭成员共同维护，总余额始终按全时段计算。
-        </p>
       </div>
 
       <div class="heading-actions">
@@ -325,68 +206,6 @@ const trendChartLabel = computed(() => {
       </div>
     </div>
 
-    <section class="surface-card quick-entry" aria-label="快速记账">
-      <div class="quick-entry__head">
-        <div>
-          <p class="page-eyebrow">快速记账</p>
-          <h3>支出、收入或账户转账，随手记下</h3>
-        </div>
-        <span class="quick-entry__hint">选择类型，填写金额即可</span>
-      </div>
-      <div class="quick-entry__actions">
-        <button
-          type="button"
-          class="quick-action quick-action--expense"
-          @click="goNewTransaction('expense')"
-        >
-          <span class="quick-action__icon" aria-hidden="true">
-            <el-icon :size="18"><Minus /></el-icon>
-          </span>
-          <span class="quick-action__text">
-            <strong>支出</strong>
-            <small>记录一笔花销</small>
-          </span>
-          <el-icon class="quick-action__arrow" :size="14" aria-hidden="true">
-            <ArrowRight />
-          </el-icon>
-        </button>
-
-        <button
-          type="button"
-          class="quick-action quick-action--income"
-          @click="goNewTransaction('income')"
-        >
-          <span class="quick-action__icon" aria-hidden="true">
-            <el-icon :size="18"><Plus /></el-icon>
-          </span>
-          <span class="quick-action__text">
-            <strong>收入</strong>
-            <small>记录一笔进账</small>
-          </span>
-          <el-icon class="quick-action__arrow" :size="14" aria-hidden="true">
-            <ArrowRight />
-          </el-icon>
-        </button>
-
-        <button
-          type="button"
-          class="quick-action quick-action--transfer"
-          @click="goNewTransaction('transfer')"
-        >
-          <span class="quick-action__icon" aria-hidden="true">
-            <el-icon :size="18"><Switch /></el-icon>
-          </span>
-          <span class="quick-action__text">
-            <strong>转账</strong>
-            <small>账户之间划转</small>
-          </span>
-          <el-icon class="quick-action__arrow" :size="14" aria-hidden="true">
-            <ArrowRight />
-          </el-icon>
-        </button>
-      </div>
-    </section>
-
     <div
       v-if="loading"
       class="overview-loading"
@@ -411,10 +230,8 @@ const trendChartLabel = computed(() => {
           </el-skeleton>
         </div>
       </div>
-      <div class="charts-grid">
-        <div v-for="item in 2" :key="item" class="surface-card skeleton-chart">
-          <el-skeleton animated :rows="7" />
-        </div>
+      <div class="surface-card skeleton-chart">
+        <el-skeleton animated :rows="7" />
       </div>
     </div>
 
@@ -480,109 +297,41 @@ const trendChartLabel = computed(() => {
         />
       </div>
 
-      <div class="charts-grid">
-        <section class="surface-card chart-card">
-          <header class="section-head">
-            <div>
-              <h3>支出分类</h3>
-              <p>{{ categorySubtitle }}</p>
-            </div>
-            <span v-if="categories.length" class="chart-total money-number">
-              {{ formatMoney(summary.expense) }}
-            </span>
-          </header>
-
-          <div class="category-mode" role="group" aria-label="支出分类统计口径">
-            <button
-              type="button"
-              class="category-mode__button"
-              :class="{ 'is-active': effectiveCategoryMode === 'top' }"
-              :aria-pressed="effectiveCategoryMode === 'top'"
-              :disabled="!categoriesReady"
-              :title="categoriesReady ? undefined : categoryModeHint"
-              @click="categoryMode = 'top'"
-            >
-              一级分类
-            </button>
-            <button
-              type="button"
-              class="category-mode__button"
-              :class="{ 'is-active': effectiveCategoryMode === 'all' }"
-              :aria-pressed="effectiveCategoryMode === 'all'"
-              @click="categoryMode = 'all'"
-            >
-              所有分类
-            </button>
-            <span
-              v-if="categoryModeHint"
-              class="category-mode__hint"
-              role="status"
-            >
-              {{ categoryModeHint }}
-            </span>
+      <section class="surface-card chart-card">
+        <header class="section-head">
+          <div>
+            <h3>每日收支走势</h3>
+            <p>{{ monthLabel }}有记录日期的收入与支出</p>
           </div>
+          <span v-if="hasMonthEntries" class="chart-caption">
+            按日汇总
+          </span>
+        </header>
 
-          <EmptyState
-            v-if="categories.length === 0"
-            title="暂时没有支出分类"
-            description="所选月份还没有支出记录。记下一笔支出后，这里会显示分类占比；账户转账不计入支出分类。"
-            :icon="PieChart"
-          >
-            <template #actions>
-              <el-button
-                type="primary"
-                plain
-                :icon="Plus"
-                @click="goNewTransaction('expense')"
-              >
-                记一笔支出
-              </el-button>
-            </template>
-          </EmptyState>
-          <BaseChart
-            v-else
-            :option="categoryOption"
-            height="330px"
-            :aria-label="categoryChartLabel"
-          />
-        </section>
-
-        <section class="surface-card chart-card">
-          <header class="section-head">
-            <div>
-              <h3>每日收支走势</h3>
-              <p>{{ monthLabel }}有记录日期的收入与支出</p>
-            </div>
-            <span v-if="hasMonthEntries" class="chart-caption">
-              按日汇总
-            </span>
-          </header>
-
-          <EmptyState
-            v-if="daily.length === 0"
-            title="暂时没有收支记录"
-            description="所选月份还没有任何收支。从第一笔记录开始，趋势会在这里呈现；转账不计入收支走势。"
-            :icon="TrendCharts"
-          >
-            <template #actions>
-              <el-button
-                type="primary"
-                plain
-                :icon="Plus"
-                @click="goNewTransaction('expense')"
-              >
-                记一笔支出
-              </el-button>
-            </template>
-          </EmptyState>
-          <BaseChart
-            v-else
-            :option="trendOption"
-            height="330px"
-            :aria-label="trendChartLabel"
-          />
-        </section>
-      </div>
+        <EmptyState
+          v-if="daily.length === 0"
+          title="暂时没有收支记录"
+          description="所选月份还没有任何收支。从第一笔记录开始，趋势会在这里呈现；转账不计入收支走势。"
+          :icon="TrendCharts"
+        >
+          <template #actions>
+            <el-button
+              type="primary"
+              plain
+              :icon="Plus"
+              @click="goNewTransaction('expense')"
+            >
+              记一笔支出
+            </el-button>
+          </template>
+        </EmptyState>
+        <BaseChart
+          v-else
+          :option="trendOption"
+          height="330px"
+          :aria-label="trendChartLabel"
+        />
+      </section>
 
       <div class="overview-foot">
         <button type="button" class="text-link" @click="goTransactions">
@@ -602,132 +351,6 @@ const trendChartLabel = computed(() => {
 
 .month-picker {
   width: 152px;
-}
-
-.quick-entry {
-  padding: 16px 18px 17px;
-  margin-bottom: 16px;
-  background:
-    radial-gradient(520px 200px at 100% 0%, rgba(181, 138, 58, 0.1), transparent 72%),
-    var(--hb-surface);
-}
-
-.quick-entry__head {
-  display: flex;
-  align-items: flex-end;
-  justify-content: space-between;
-  gap: 12px;
-  margin-bottom: 12px;
-}
-
-.quick-entry__head .page-eyebrow {
-  margin-bottom: 3px;
-  font-size: 10px;
-}
-
-.quick-entry__head h3 {
-  font-size: 16px;
-}
-
-.quick-entry__hint {
-  flex: 0 0 auto;
-  color: var(--hb-ink-faint);
-  font-size: 11px;
-}
-
-.quick-entry__actions {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 10px;
-}
-
-.quick-action {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  min-width: 0;
-  padding: 12px 14px;
-  color: var(--hb-ink);
-  text-align: left;
-  appearance: none;
-  background: var(--hb-surface);
-  border: 1px solid var(--hb-line);
-  border-radius: 14px;
-  cursor: pointer;
-  transition:
-    transform 0.16s ease,
-    border-color 0.16s ease,
-    box-shadow 0.16s ease;
-}
-
-.quick-action:hover {
-  transform: translateY(-1px);
-  box-shadow: 0 8px 18px rgba(59, 48, 33, 0.08);
-}
-
-.quick-action--expense {
-  background: linear-gradient(135deg, #fdf6f0, #fbf1e8);
-  border-color: #eedbca;
-}
-
-.quick-action--income {
-  background: linear-gradient(135deg, #f1f9f6, #e9f5f1);
-  border-color: #d3e7e1;
-}
-
-.quick-action--transfer {
-  background: linear-gradient(135deg, #fcf8ee, #f8f1e3);
-  border-color: #e8dcc3;
-}
-
-.quick-action__icon {
-  display: grid;
-  flex: 0 0 auto;
-  width: 34px;
-  height: 34px;
-  place-items: center;
-  border-radius: 10px;
-}
-
-.quick-action--expense .quick-action__icon {
-  color: #9a5530;
-  background: var(--hb-terracotta-soft);
-}
-
-.quick-action--income .quick-action__icon {
-  color: var(--hb-teal-dark);
-  background: var(--hb-teal-soft);
-}
-
-.quick-action--transfer .quick-action__icon {
-  color: #8a6a2f;
-  background: #f6ecd7;
-}
-
-.quick-action__text {
-  display: flex;
-  flex: 1;
-  flex-direction: column;
-  gap: 1px;
-  min-width: 0;
-}
-
-.quick-action__text strong {
-  font-size: 13px;
-  font-weight: 600;
-}
-
-.quick-action__text small {
-  overflow: hidden;
-  color: var(--hb-ink-faint);
-  font-size: 10px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.quick-action__arrow {
-  flex: 0 0 auto;
-  color: var(--hb-ink-faint);
 }
 
 .stats-grid {
@@ -805,12 +428,6 @@ const trendChartLabel = computed(() => {
   font-weight: 600;
 }
 
-.charts-grid {
-  display: grid;
-  grid-template-columns: minmax(0, 0.92fr) minmax(0, 1.08fr);
-  gap: 14px;
-}
-
 .chart-card {
   min-width: 0;
   padding: 20px 22px 16px;
@@ -820,72 +437,10 @@ const trendChartLabel = computed(() => {
   margin-bottom: 8px;
 }
 
-.chart-total {
-  padding-top: 4px;
-  color: var(--hb-ink);
-  font-size: 14px;
-  font-weight: 600;
-}
-
 .chart-caption {
   padding-top: 5px;
   color: var(--hb-ink-faint);
   font-size: 11px;
-}
-
-.category-mode {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 6px;
-  margin-bottom: 12px;
-}
-
-.category-mode__button {
-  min-height: 28px;
-  padding: 3px 11px;
-  color: var(--hb-ink-soft);
-  font: inherit;
-  font-size: 12px;
-  font-weight: 600;
-  background: var(--hb-bg);
-  border: 1px solid var(--hb-line);
-  border-radius: 999px;
-  cursor: pointer;
-  appearance: none;
-  transition:
-    color 0.16s ease,
-    background-color 0.16s ease,
-    border-color 0.16s ease;
-}
-
-.category-mode__button:hover:not(:disabled) {
-  color: var(--hb-ink);
-  border-color: var(--hb-line-strong);
-}
-
-.category-mode__button.is-active {
-  color: var(--hb-teal-dark);
-  background: var(--hb-teal-soft);
-  border-color: var(--hb-teal-soft);
-}
-
-.category-mode__button:focus-visible {
-  outline: 2px solid var(--hb-teal);
-  outline-offset: 2px;
-}
-
-.category-mode__button:disabled {
-  cursor: not-allowed;
-  opacity: 0.55;
-}
-
-.category-mode__hint {
-  flex: 1 1 140px;
-  min-width: 0;
-  color: var(--hb-ink-faint);
-  font-size: 11px;
-  line-height: 1.5;
 }
 
 .overview-foot {
@@ -945,26 +500,9 @@ const trendChartLabel = computed(() => {
   .stats-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
-
-  .charts-grid {
-    grid-template-columns: 1fr;
-  }
 }
 
 @media (max-width: 760px) {
-  .quick-entry {
-    padding: 14px;
-  }
-
-  .quick-entry__hint {
-    display: none;
-  }
-
-  .quick-action {
-    gap: 8px;
-    padding: 11px 12px;
-  }
-
   .onboarding {
     align-items: flex-start;
     flex-wrap: wrap;
@@ -978,52 +516,8 @@ const trendChartLabel = computed(() => {
 }
 
 @media (max-width: 640px) {
-  .quick-entry {
-    padding: 13px 12px 12px;
-    margin-bottom: 12px;
-  }
-
-  .quick-entry__head {
-    margin-bottom: 10px;
-  }
-
-  .quick-entry__head h3 {
-    font-size: 14px;
-  }
-
-  .quick-entry__actions {
-    gap: 6px;
-  }
-
-  .quick-action {
-    flex-direction: column;
-    align-items: flex-start;
-    gap: 7px;
-    padding: 10px;
-    border-radius: 12px;
-  }
-
-  .quick-action__icon {
-    width: 30px;
-    height: 30px;
-    border-radius: 9px;
-  }
-
-  .quick-action__text small,
-  .quick-action__arrow {
-    display: none;
-  }
-
-  .quick-action__text strong {
-    font-size: 12px;
-  }
-
   .stats-grid {
     grid-template-columns: minmax(0, 1fr);
-    gap: 10px;
-  }
-
-  .charts-grid {
     gap: 10px;
   }
 

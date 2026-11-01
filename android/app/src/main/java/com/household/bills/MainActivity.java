@@ -666,13 +666,17 @@ public class MainActivity extends Activity {
             controller.setSystemBarsAppearance(appearance, appearance);
         }
         root.setOnApplyWindowInsetsListener((view, insets) -> {
-            Insets bars = insets.getInsets(
-                    WindowInsets.Type.systemBars()
-                            | WindowInsets.Type.displayCutout());
+            int barsTypes = WindowInsets.Type.systemBars()
+                    | WindowInsets.Type.displayCutout();
+            Insets bars = insets.getInsets(barsTypes);
             Insets ime = insets.getInsets(WindowInsets.Type.ime());
             int bottom = Math.max(bars.bottom, ime.bottom);
             view.setPadding(bars.left, bars.top, bars.right, bottom);
-            return insets;
+            // Native padding already handles these insets. Pass zeroes to WebView
+            // so its CSS safe areas and visual viewport do not apply them again.
+            return new WindowInsets.Builder(insets)
+                    .setInsets(barsTypes | WindowInsets.Type.ime(), Insets.NONE)
+                    .build();
         });
         root.requestApplyInsets();
     }

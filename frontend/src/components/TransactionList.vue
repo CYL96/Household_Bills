@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Delete, EditPen } from '@element-plus/icons-vue'
+import { Delete, EditPen, Loading } from '@element-plus/icons-vue'
 import { getErrorMessage } from '../api/client'
 import { deleteTransaction } from '../api/transactions'
 import type { Account, Transaction, TransactionKind } from '../api/types'
@@ -55,6 +55,226 @@ const editDisabled = computed(
   () => props.editingDisabled || props.accounts.length === 0,
 )
 
+/** Must stay in sync with `.tx-card__actions` width in the style block. */
+const SWIPE_REVEAL_WIDTH = 152
+const SWIPE_START_PX = 8
+const SWIPE_SETTLE_RATIO = 0.5
+
+interface SwipeSession {
+  pointerId: number
+  id: number
+  surface: HTMLElement
+  startX: number
+  startY: number
+  baseOffset: number
+  revealWidth: number
+  offset: number
+  active: boolean
+}
+
+const listRoot = ref<HTMLElement | null>(null)
+const openRowId = ref<number | null>(null)
+const draggingRowId = ref<number | null>(null)
+const dragOffset = ref(0)
+let swipeSession: SwipeSession | null = null
+let suppressClickUntil = 0
+
+function actionPanelId(transactionId: number): string {
+  return `tx-actions-${transactionId}`
+}
+
+function surfaceStyle(transactionId: number) {
+  if (draggingRowId.value !== transactionId) return undefined
+  return { transform: `translateX(-${dragOffset.value}px)` }
+}
+
+function endSwipe(): void {
+  const session = swipeSession
+  swipeSession = null
+  draggingRowId.value = null
+  dragOffset.value = 0
+  if (!session) return
+  try {
+    if (session.surface.hasPointerCapture(session.pointerId)) {
+      session.surface.releasePointerCapture(session.pointerId)
+    }
+  } catch {
+    // The browser may already have released capture.
+  }
+}
+
+function closeSwipe(options: { restoreFocus?: boolean } = {}): void {
+  const id = openRowId.value
+  openRowId.value = null
+  endSwipe()
+  if (id === null || !options.restoreFocus) return
+  const card = listRoot.value?.querySelector<HTMLElement>(
+    `[data-tx-id="${id}"]`,
+  )
+  card?.focus({ preventScroll: true })
+}
+
+function openRow(transactionId: number): void {
+  if (openRowId.value === transactionId) return
+  endSwipe()
+  openRowId.value = transactionId
+}
+
+function handleDocumentPointerDown(event: PointerEvent): void {
+  if (openRowId.value === null) return
+  if (!(event.target instanceof Element)) return
+  const card = event.target.closest<HTMLElement>('[data-tx-id]')
+  if (card && Number(card.dataset.txId) === openRowId.value) return
+  closeSwipe()
+}
+
+function handleDocumentKeydown(event: KeyboardEvent): void {
+  if (event.key !== 'Escape' || openRowId.value === null) return
+  event.preventDefault()
+  closeSwipe({ restoreFocus: true })
+}
+
+onMounted(() => {
+  document.addEventListener('pointerdown', handleDocumentPointerDown, true)
+  document.addEventListener('keydown', handleDocumentKeydown)
+})
+
+onBeforeUnmount(() => {
+  document.removeEventListener('pointerdown', handleDocumentPointerDown, true)
+  document.removeEventListener('keydown', handleDocumentKeydown)
+  closeSwipe()
+})
+
+watch(isMobile, () => closeSwipe())
+watch(
+  () => props.transactions,
+  () => closeSwipe(),
+)
+
+function handleSurfacePointerDown(
+  event: PointerEvent,
+  transactionId: number,
+): void {
+  if (event.pointerType === 'mouse' && event.button !== 0) return
+  if (
+    event.target instanceof Element &&
+    event.target.closest('button, a, input, textarea, select, [role="button"]')
+  ) {
+    return
+  }
+  endSwipe()
+  if (openRowId.value !== null && openRowId.value !== transactionId) {
+    openRowId.value = null
+  }
+  const surface = event.currentTarget
+  if (!(surface instanceof HTMLElement)) return
+  const actions =
+    surface.parentElement?.querySelector<HTMLElement>('.tx-card__actions')
+  const revealWidth =
+    actions?.getBoundingClientRect().width || SWIPE_REVEAL_WIDTH
+  swipeSession = {
+    pointerId: event.pointerId,
+    id: transactionId,
+    surface,
+    startX: event.clientX,
+    startY: event.clientY,
+    baseOffset: openRowId.value === transactionId ? revealWidth : 0,
+    revealWidth,
+    offset: openRowId.value === transactionId ? revealWidth : 0,
+    active: false,
+  }
+  try {
+    surface.setPointerCapture(event.pointerId)
+  } catch {
+    // Pointer capture is an enhancement; the gesture still tracks moves.
+  }
+}
+
+function handleSurfacePointerMove(event: PointerEvent): void {
+  const session = swipeSession
+  if (!session || event.pointerId !== session.pointerId) return
+  const dx = event.clientX - session.startX
+  const dy = event.clientY - session.startY
+  if (!session.active) {
+    if (Math.abs(dx) < SWIPE_START_PX && Math.abs(dy) < SWIPE_START_PX) return
+    // Vertical intent belongs to the page scroll; horizontal rightward
+    // movement on a closed card has nothing to reveal.
+    if (Math.abs(dy) >= Math.abs(dx)) {
+      endSwipe()
+      return
+    }
+    if (session.baseOffset === 0 && dx > 0) {
+      endSwipe()
+      return
+    }
+    session.active = true
+    draggingRowId.value = session.id
+  }
+  if (event.cancelable) event.preventDefault()
+  const next = Math.min(
+    Math.max(session.baseOffset - dx, 0),
+    session.revealWidth,
+  )
+  if (next === session.offset) return
+  session.offset = next
+  dragOffset.value = next
+}
+
+function handleSurfacePointerUp(event: PointerEvent): void {
+  const session = swipeSession
+  if (!session || event.pointerId !== session.pointerId) return
+  const { id, active, offset, revealWidth } = session
+  endSwipe()
+  if (!active) return
+  suppressClickUntil = Date.now() + 400
+  openRowId.value =
+    offset > revealWidth * SWIPE_SETTLE_RATIO ? id : null
+}
+
+function handleSurfacePointerCancel(event: PointerEvent): void {
+  const session = swipeSession
+  if (!session || event.pointerId !== session.pointerId) return
+  endSwipe()
+}
+
+function handleSurfaceClick(transactionId: number): void {
+  if (Date.now() < suppressClickUntil) return
+  if (openRowId.value === transactionId) closeSwipe()
+}
+
+function handleCardKeydown(event: KeyboardEvent, transactionId: number): void {
+  if (event.target !== event.currentTarget) return
+  if (event.altKey || event.ctrlKey || event.metaKey) return
+  if (
+    event.key === 'Enter' ||
+    event.key === ' ' ||
+    event.key === 'Spacebar'
+  ) {
+    event.preventDefault()
+    openRow(transactionId)
+    return
+  }
+  if (event.key === 'ArrowLeft') {
+    event.preventDefault()
+    openRow(transactionId)
+    return
+  }
+  if (event.key === 'ArrowRight' && openRowId.value === transactionId) {
+    event.preventDefault()
+    closeSwipe({ restoreFocus: true })
+  }
+}
+
+function handleEditAction(transaction: Transaction): void {
+  closeSwipe()
+  openEdit(transaction)
+}
+
+function handleDeleteAction(transaction: Transaction): void {
+  closeSwipe()
+  void confirmDelete(transaction)
+}
+
 function iconForCategory(name: string, kind: TransactionKind) {
   if (kind === 'transfer') return categoryIcon(name)
   const entry = readCategoryEntries(kind).find((candidate) =>
@@ -79,6 +299,48 @@ function displayAccount(row: unknown): string {
   }
   return row.account_name
 }
+
+interface TransactionDay {
+  key: string
+  label: string
+  transactions: Transaction[]
+}
+
+/** `date` is local civil YYYY-MM-DDTHH:mm:ss, so its prefix is the local day. */
+function dayKey(date: string): string {
+  const match = /^(\d{4}-\d{2}-\d{2})/.exec(date)
+  return match ? match[1] : date
+}
+
+function dayLabel(key: string): string {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(key)
+  if (!match) return key
+  return `${match[1]}年${Number(match[2])}月${Number(match[3])}日`
+}
+
+/** Mobile rows show only the local time of day; dates live in group labels. */
+function timeOfDay(date: string): string {
+  const match = /^\d{4}-\d{2}-\d{2}T(\d{2}:\d{2})/.exec(date)
+  return match ? match[1] : formatDateTimeLabel(date)
+}
+
+/**
+ * Groups adjacent rows by local day without reordering: the API already
+ * returns newest first, and a day reappearing later stays a second group.
+ */
+const transactionDays = computed<TransactionDay[]>(() => {
+  const days: TransactionDay[] = []
+  for (const transaction of props.transactions) {
+    const key = dayKey(transaction.date)
+    const latest = days[days.length - 1]
+    if (latest && latest.key === key) {
+      latest.transactions.push(transaction)
+    } else {
+      days.push({ key, label: dayLabel(key), transactions: [transaction] })
+    }
+  }
+  return days
+})
 
 function recordNoun(row: unknown): string {
   if (!isTransactionRow(row)) return '记录'
@@ -182,80 +444,125 @@ function handleViewBills(selection: {
 <template>
   <div class="transaction-list">
     <template v-if="isMobile">
-      <div v-loading="loading" class="mobile-list">
-        <article
-          v-for="transaction in transactions"
-          :key="transaction.id"
-          class="tx-card"
+      <div ref="listRoot" v-loading="loading" class="mobile-list">
+        <section
+          v-for="(day, index) in transactionDays"
+          :key="`${day.key}-${index}`"
+          class="tx-day-group"
+          :aria-labelledby="`tx-day-${index}`"
         >
-          <div class="tx-card__top">
-            <div class="tx-card__identity">
-              <span
-                class="tx-card__dot"
-                :class="`tx-card__dot--${transaction.kind}`"
-                aria-hidden="true"
-              ></span>
-              <div class="tx-card__heading">
-                <h4>
-                  <el-icon class="category-icon" aria-hidden="true">
-                    <component :is="iconForCategory(transaction.category, transaction.kind)" />
-                  </el-icon>
-                  <span>{{ transaction.category }}</span>
-                </h4>
-                <p>
-                  <span class="tx-card__time">{{ formatDateTimeLabel(transaction.date) }}</span>
-                  <span aria-hidden="true"> · </span>
-                  {{ displayAccount(transaction) }}
+          <h3 :id="`tx-day-${index}`" class="tx-day-group__label">
+            {{ day.label }}
+          </h3>
+          <div class="tx-day-group__rows">
+            <article
+              v-for="transaction in day.transactions"
+              :key="transaction.id"
+              class="tx-card"
+              :class="{
+                'tx-card--open': openRowId === transaction.id,
+                'tx-card--dragging': draggingRowId === transaction.id,
+              }"
+              :data-tx-id="transaction.id"
+              tabindex="0"
+              :aria-expanded="openRowId === transaction.id"
+              :aria-controls="actionPanelId(transaction.id)"
+              @keydown="handleCardKeydown($event, transaction.id)"
+            >
+              <div
+                :id="actionPanelId(transaction.id)"
+                class="tx-card__actions"
+                :inert="openRowId === transaction.id ? undefined : true"
+                :aria-hidden="openRowId !== transaction.id"
+              >
+                <button
+                  type="button"
+                  class="tx-card__action"
+                  :disabled="editDisabled"
+                  :aria-label="`编辑${transaction.category}这笔${recordNoun(transaction)}`"
+                  @click="handleEditAction(transaction)"
+                >
+                  <el-icon aria-hidden="true"><EditPen /></el-icon>
+                  <span>编辑</span>
+                </button>
+                <button
+                  type="button"
+                  class="tx-card__action tx-card__action--danger"
+                  :disabled="deletingId === transaction.id"
+                  :aria-label="`删除${transaction.category}这笔${recordNoun(transaction)}`"
+                  @click="handleDeleteAction(transaction)"
+                >
+                  <el-icon
+                    v-if="deletingId === transaction.id"
+                    class="is-loading"
+                    aria-hidden="true"
+                  ><Loading /></el-icon>
+                  <el-icon v-else aria-hidden="true"><Delete /></el-icon>
+                  <span>删除</span>
+                </button>
+              </div>
+
+              <div
+                class="tx-card__surface"
+                :style="surfaceStyle(transaction.id)"
+                @pointerdown="handleSurfacePointerDown($event, transaction.id)"
+                @pointermove="handleSurfacePointerMove"
+                @pointerup="handleSurfacePointerUp"
+                @pointercancel="handleSurfacePointerCancel"
+                @lostpointercapture="handleSurfacePointerCancel"
+                @click="handleSurfaceClick(transaction.id)"
+              >
+                <div class="tx-card__top">
+                  <div class="tx-card__identity">
+                    <el-icon class="category-icon" aria-hidden="true">
+                      <component :is="iconForCategory(transaction.category, transaction.kind)" />
+                    </el-icon>
+                    <h4 :title="transaction.category">{{ transaction.category }}</h4>
+                  </div>
+                  <span
+                    class="tx-card__amount money-number"
+                    :class="`amount--${transaction.kind}`"
+                    :aria-label="`${kindLabel(transaction.kind)} ${formatSignedAmount(transaction.amount, transaction.kind)}`"
+                  >
+                    {{ formatSignedAmount(transaction.amount, transaction.kind) }}
+                  </span>
+                </div>
+
+                <p class="tx-card__meta">
+                  <time
+                    class="tx-card__time"
+                    :datetime="transaction.date"
+                  >
+                    <span class="sr-only">{{ formatDateTimeLabel(transaction.date) }}</span>
+                    <span aria-hidden="true">{{ timeOfDay(transaction.date) }}</span>
+                  </time>
+                  <template v-if="transaction.kind === 'transfer'">
+                    <span class="tx-card__sep" aria-hidden="true">·</span>
+                    <span class="tx-card__flag">转账</span>
+                  </template>
+                  <span class="tx-card__sep" aria-hidden="true">·</span>
+                  <span
+                    class="tx-card__account"
+                    :title="displayAccount(transaction)"
+                  >{{ displayAccount(transaction) }}</span>
+                  <span class="tx-card__sep" aria-hidden="true">·</span>
+                  <span
+                    class="tx-card__owner"
+                    :title="transaction.owner_name || '未知成员'"
+                  >{{ transaction.owner_name || '未知成员' }}</span>
+                </p>
+
+                <p
+                  v-if="transaction.note"
+                  class="tx-card__note"
+                  :title="transaction.note"
+                >
+                  {{ transaction.note }}
                 </p>
               </div>
-            </div>
-            <span
-              class="tx-card__amount money-number"
-              :class="`amount--${transaction.kind}`"
-            >
-              {{ formatSignedAmount(transaction.amount, transaction.kind) }}
-            </span>
+            </article>
           </div>
-
-          <p v-if="transaction.note" class="tx-card__note">
-            {{ transaction.note }}
-          </p>
-
-          <div class="tx-card__foot">
-            <div class="tx-card__meta">
-              <span class="kind-pill" :class="`kind-pill--${transaction.kind}`">
-                {{ kindLabel(transaction.kind) }}
-              </span>
-              <span
-                class="tx-card__owner"
-                :title="transaction.owner_name || '未知成员'"
-              >{{ transaction.owner_name || '未知成员' }}</span>
-            </div>
-            <div class="tx-card__actions">
-              <el-button
-                text
-                size="small"
-                :icon="EditPen"
-                :disabled="editDisabled"
-                :aria-label="`编辑${transaction.category}这笔${recordNoun(transaction)}`"
-                @click="openEdit(transaction)"
-              >
-                编辑
-              </el-button>
-              <el-button
-                text
-                size="small"
-                type="danger"
-                :icon="Delete"
-                :loading="deletingId === transaction.id"
-                :aria-label="`删除${transaction.category}这笔${recordNoun(transaction)}`"
-                @click="confirmDelete(transaction)"
-              >
-                删除
-              </el-button>
-            </div>
-          </div>
-        </article>
+        </section>
 
         <slot v-if="!loading && transactions.length === 0" name="empty">
           <EmptyState
@@ -529,150 +836,236 @@ function handleViewBills(selection: {
   padding-bottom: 6px;
 }
 
-.tx-card {
-  margin-bottom: 9px;
-  padding: 14px 15px;
-  background: #fbf7f0;
-  border: 1px solid var(--hb-line);
-  border-radius: 14px;
+.tx-day-group {
+  margin-bottom: 10px;
 }
 
-.tx-card:last-of-type {
+.tx-day-group:last-of-type {
   margin-bottom: 0;
+}
+
+.tx-day-group__label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 3px 5px;
+  color: var(--hb-ink-faint);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+}
+
+.tx-day-group__label::after {
+  content: '';
+  flex: 1 1 auto;
+  height: 1px;
+  background: var(--hb-line);
+}
+
+.tx-day-group__rows {
+  display: grid;
+  gap: 6px;
+}
+
+.tx-card {
+  position: relative;
+  overflow: hidden;
+  background: var(--hb-surface-raised);
+  border: 1px solid var(--hb-line);
+  border-radius: 10px;
+  touch-action: pan-y;
+}
+
+.tx-card__surface {
+  position: relative;
+  z-index: 1;
+  padding: 8px 12px 9px;
+  background: #fbf7f0;
+  touch-action: pan-y;
+  transition: transform 0.22s cubic-bezier(0.22, 0.61, 0.36, 1);
+}
+
+.tx-card--open .tx-card__surface {
+  transform: translateX(-152px);
+}
+
+.tx-card--dragging {
+  user-select: none;
+}
+
+.tx-card--dragging .tx-card__surface {
+  transition: none;
+}
+
+.tx-card__actions {
+  position: absolute;
+  inset: 0 0 0 auto;
+  z-index: 0;
+  display: flex;
+  width: 152px;
+}
+
+.tx-card__action {
+  display: flex;
+  flex: 1 1 0;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  min-width: 44px;
+  min-height: 44px;
+  padding: 6px;
+  color: var(--hb-teal);
+  font: inherit;
+  font-size: 12px;
+  background: var(--hb-surface-raised);
+  border: 0;
+  border-radius: 0;
+  cursor: pointer;
+  appearance: none;
+  transition: background-color 0.16s ease, color 0.16s ease;
+}
+
+.tx-card__action + .tx-card__action {
+  border-left: 1px solid var(--hb-line);
+}
+
+.tx-card__action--danger {
+  color: var(--hb-danger);
+}
+
+.tx-card__action:disabled {
+  color: var(--hb-ink-faint);
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.tx-card__action:focus-visible {
+  outline-offset: -2px;
+}
+
+@media (hover: hover) {
+  .tx-card__action:hover:not(:disabled) {
+    background: var(--hb-teal-faint);
+  }
+
+  .tx-card__action--danger:hover:not(:disabled) {
+    background: var(--hb-danger-soft);
+  }
 }
 
 .tx-card__top {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   justify-content: space-between;
-  gap: 12px;
+  gap: 10px;
 }
 
 .tx-card__identity {
   display: flex;
-  min-width: 0;
-  gap: 9px;
-}
-
-.tx-card__dot {
-  flex: 0 0 auto;
-  width: 8px;
-  height: 8px;
-  margin-top: 6px;
-  border-radius: 50%;
-}
-
-.tx-card__dot--income {
-  background: var(--hb-teal);
-}
-
-.tx-card__dot--expense {
-  background: var(--hb-terracotta);
-}
-
-.tx-card__dot--transfer {
-  background: var(--hb-gold);
-}
-
-.tx-card__heading {
-  min-width: 0;
-}
-
-.tx-card__heading h4 {
-  display: flex;
-  align-items: flex-start;
+  align-items: center;
   gap: 6px;
-  overflow-wrap: anywhere;
-  font-size: 14px;
+  min-width: 0;
+}
+
+.tx-card__identity h4 {
+  min-width: 0;
+  overflow: hidden;
+  font-size: 13.5px;
   font-weight: 600;
+  line-height: 1.4;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.tx-card__heading h4 .category-icon {
+.tx-card__identity .category-icon {
+  margin-top: 0;
+}
+
+.tx-card__meta {
+  display: flex;
+  align-items: baseline;
   margin-top: 1px;
-}
-
-.tx-card__heading p {
-  margin-top: 2px;
   color: var(--hb-ink-faint);
   font-size: 11px;
   font-variant-numeric: tabular-nums;
-  line-height: 1.55;
-  overflow-wrap: anywhere;
+  line-height: 1.45;
+  white-space: nowrap;
+}
+
+.tx-card__sep {
+  flex: 0 0 auto;
+  margin: 0 5px;
+  color: var(--hb-ink-faint);
 }
 
 .tx-card__time {
+  flex: 0 0 auto;
   white-space: nowrap;
+}
+
+.tx-card__flag {
+  flex: 0 0 auto;
+  color: #7d5f25;
+}
+
+.tx-card__account,
+.tx-card__owner {
+  overflow: hidden;
+  color: var(--hb-ink-soft);
+  text-overflow: ellipsis;
+}
+
+.tx-card__account {
+  flex: 1 1 auto;
+  min-width: 2.5em;
+}
+
+.tx-card__owner {
+  flex: 0 1 auto;
+  min-width: 2.5em;
+  max-width: 45%;
 }
 
 .tx-card__amount {
   flex: 0 0 auto;
-  padding-top: 1px;
-  font-size: 16px;
+  font-size: 15px;
   font-weight: 600;
   white-space: nowrap;
 }
 
 .tx-card__note {
-  margin-top: 9px;
-  color: var(--hb-ink-soft);
-  font-size: 12px;
-  line-height: 1.65;
-  overflow-wrap: anywhere;
-}
-
-.tx-card__foot {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  margin-top: 10px;
-  padding-top: 9px;
-  border-top: 1px dashed var(--hb-line-strong);
-}
-
-.tx-card__meta {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-width: 0;
-  color: var(--hb-ink-faint);
-  font-size: 10px;
-}
-
-.tx-card__owner {
-  min-width: 0;
-  max-width: 9rem;
+  margin-top: 1px;
   overflow: hidden;
+  color: var(--hb-ink-soft);
+  font-size: 11px;
+  line-height: 1.5;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.tx-card__owner {
-  color: var(--hb-ink-soft);
-}
-
-.tx-card__actions {
-  display: flex;
-  flex: 0 0 auto;
-  gap: 0;
-}
-
-.tx-card__actions :deep(.el-button) {
-  padding: 3px 5px;
-}
-
 @media (max-width: 520px) {
-  .tx-card {
-    padding: 13px;
+  .tx-card__surface {
+    padding: 7px 10px 8px;
+  }
+
+  .tx-card__top {
+    gap: 8px;
   }
 
   .tx-card__amount {
-    font-size: 15px;
+    font-size: 14.5px;
   }
 
   .tx-card__meta {
-    flex-wrap: wrap;
-    gap: 5px;
+    font-size: 10.5px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tx-card__surface,
+  .tx-card__action {
+    transition: none;
   }
 }
 </style>
