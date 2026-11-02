@@ -22,6 +22,7 @@ Chinese-language household ledger: an environment-bootstrapped `admin` creates m
 | `frontend/src/api/` | Wire types, endpoint wrappers, shared fetch/error/CSRF handling |
 | `frontend/src/views/`, `components/` | Route pages and reusable mutation dialogs |
 | `frontend/src/stores/`, `router/`, `utils/` | Shared reactive state, access guards, date/money formatting |
+| `android/` | Native Java WebView client (`com.household.bills`); Gradle 8.11.1, AGP 8.9.2, JDK 17, compile/target SDK 35, minSdk 26; no AndroidX or runtime dependencies |
 | `test/` | Manual build/run helper, not an automated test suite |
 | `docs/changes/` | Per-task and per-requirement change records; naming and content conventions in `docs/changes/README.md` |
 
@@ -39,6 +40,9 @@ Run commands from the indicated directory. Create a PostgreSQL database/user fir
 | Build backend binary | `backend/` | `CGO_ENABLED=0 go build -trimpath -o household-bills ./cmd/server` |
 | Backend tests; DB tests skip if unconfigured | `backend/` | `go test ./...` |
 | Full backend tests | `backend/` | `TEST_DATABASE_URL='postgres://USER:PASSWORD@127.0.0.1:5432/household_bills_test?sslmode=disable' go test ./...` |
+| Android dev shell (NixOS: JDK 17, SDK 35, adb, emulator) | root | `nix-shell` |
+| Build and unit-test Android APK | `android/` | `./gradlew :app:testReleaseUnitTest :app:assembleDebug` |
+| Emulator (needs `/dev/kvm`) | `android/` | `avdmanager create avd -n household-bills -k "system-images;android-35;google_apis;x86_64" --force && emulator -avd household-bills` |
 | Build/run containers | root | `docker compose up -d --build` |
 
 There is no configured lint command. Format Go with `gofmt`; frontend `build` runs `vue-tsc --noEmit && vite build`, not lint or behavioral tests. Compose setup: copy `.env.example` to `.env`, supply `POSTGRES_PASSWORD` and `ADMIN_PASSWORD`, and set `COOKIE_SECURE=false` only for local HTTP.
@@ -58,7 +62,7 @@ There is no configured lint command. Format Go with `gofmt`; frontend `build` ru
 - **MUST** store task-specific changes, requirement details, implementation decisions, and verification records in `docs/changes/`, not append them to the root `README.md` or a single growing changelog.
 - **MUST** use one Markdown file per task or requirement, named `YYYY-MM-DD-topic.md` (creation date plus a concise lowercase, hyphen-separated topic). Update the existing file for follow-up work on the same task; create a separate file for an independent requirement.
 - Write records in Chinese. Include background/goals, actual changes, verification performed and results, and compatibility or migration notes when applicable. Explicitly identify checks not run; never present planned work as completed or include secrets.
-- Keep the root `README.md` focused on the project overview, setup, configuration, operations, and essential usage. Update it only when those instructions actually change; keep a stable link to `docs/changes/README.md` instead of adding an entry for every task.
+- Keep the root `README.md` written for non-technical readers: project overview, features, deployment, and essential usage. Put development, testing, build, and release details in `docs/development.md`; keep a stable link to `docs/changes/README.md` instead of adding an entry for every task.
 - Keep this file focused on durable repository rules, not task history. Follow `docs/changes/README.md` for record organization; do not duplicate full records across documents.
 
 ## Important Files
@@ -68,11 +72,13 @@ There is no configured lint command. Format Go with `gofmt`; frontend `build` ru
 - `frontend/src/main.ts`, `frontend/src/router/index.ts`, `frontend/src/api/client.ts`: startup, route guards, and request/error behavior.
 - `frontend/package.json`, `frontend/package-lock.json`, `frontend/vite.config.ts`, `frontend/tsconfig.json`: scripts, locked dependencies, proxy, strict TypeScript.
 - `backend/go.mod`, `Dockerfile`, `compose.yaml`, `.env.example`: toolchains and deployment contract.
-- `README.md`: setup/operations reference, but its “no transfers” statement and balance formula are stale; implemented transfer behavior in source/tests is authoritative.
+- `shell.nix`: NixOS Android toolchain shell (JDK 17, SDK 35, adb, emulator) and the `aapt2` override used by Gradle.
+- `README.md`: user/deployment-facing overview (Chinese, non-technical audience); `docs/development.md`: local development, tests, binary script, and Android build/sign/publish details.
 
 ## Runtime/Tooling Preferences
 
 - Use Go **1.26.0+**, Node.js **22+**, **npm** with the committed lockfile, and PostgreSQL **17+**. Docker builds use Node 22 and Go 1.26. There is no Bun workflow.
+- Android builds need JDK 17 and SDK Platform 35 / Build Tools 35.0.0 with the committed Gradle wrapper 8.11.1. On NixOS use the root `shell.nix`, which also makes Gradle use the SDK `aapt2`; do not commit machine-specific `local.properties`, `sdk.dir`, or proxy settings. Release signing comes only from the four `HOUSEHOLD_BILLS_*` environment variables; never commit keys or passwords.
 - Go reads process environment only; it does **not** load `.env`. Docker Compose reads the root `.env`. `DATABASE_URL` is required; `ADMIN_PASSWORD` is required on first bootstrap and rotates the existing admin password when changed.
 - `COOKIE_SECURE` defaults to `true`; use HTTPS outside trusted local testing. `ALLOWED_ORIGINS` is optional; otherwise preserve same-origin/Host behavior. `PORT` controls only Compose's host port (default `8080`), not the Go listener (`LISTEN_ADDR`, default `:8000`).
 - `FRONTEND_DIST` defaults to `../frontend/dist`, relative to the process working directory. Build assets before serving with Go; `frontend/dist/` and `backend/household-bills` are generated, not source.
