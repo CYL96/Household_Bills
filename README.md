@@ -33,9 +33,7 @@
 
 ### Android App
 
-| 总览 | 流水明细 | 统计报表 |
-| --- | --- | --- |
-| ![Android 总览：手机上的收支统计卡片、每日收支走势和底部导航](docs/images/android-overview.png) | ![Android 流水明细：按月份查看流水记录](docs/images/android-transactions.png) | ![Android 统计报表：分类占比、金额和笔数](docs/images/android-statistics.png) |
+![Android App：从左到右依次为总览、流水明细和统计报表](docs/images/android-app.png)
 
 ## 用 Docker Compose 部署
 
