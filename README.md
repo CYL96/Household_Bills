@@ -31,7 +31,7 @@
 
 ### Android App
 
-<img src="docs/images/android-app.png" width="320" alt="Android App 总览：手机上的收支统计卡片、每日收支走势和底部导航">
+![Android App 总览：手机上的收支统计卡片、每日收支走势和底部导航](docs/images/android-app.png)
 
 ## 用 Docker Compose 部署
 
