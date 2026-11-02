@@ -19,17 +19,7 @@
 
 ### Web 端
 
-**总览**
-
-![Web 端总览：侧边导航、收入与支出统计、家庭总余额和每日收支走势](docs/images/web-overview.png)
-
-**流水明细**
-
-![Web 端流水明细：按月份查看分类、金额、账户、备注和归属成员](docs/images/web-transactions.png)
-
-**统计报表**
-
-![Web 端统计报表：月度支出分类占比、分类金额和笔数](docs/images/web-statistics.png)
+![Web 页面：自上而下依次为总览、流水明细和统计报表的重点区域](docs/images/web-pages.png)
 
 ### Android App
 
