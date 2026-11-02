@@ -19,19 +19,23 @@
 
 ### Web 端
 
+**总览**
+
 ![Web 端总览：侧边导航、收入与支出统计、家庭总余额和每日收支走势](docs/images/web-overview.png)
 
-### 流水明细
+**流水明细**
 
-![流水明细：按月份查看分类、金额、账户、备注和归属成员](docs/images/web-transactions.png)
+![Web 端流水明细：按月份查看分类、金额、账户、备注和归属成员](docs/images/web-transactions.png)
 
-### 统计报表
+**统计报表**
 
-![统计报表：月度支出分类占比、分类金额和笔数](docs/images/web-statistics.png)
+![Web 端统计报表：月度支出分类占比、分类金额和笔数](docs/images/web-statistics.png)
 
 ### Android App
 
-![Android App 总览：手机上的收支统计卡片、每日收支走势和底部导航](docs/images/android-app.png)
+| 总览 | 流水明细 | 统计报表 |
+| --- | --- | --- |
+| ![Android 总览：手机上的收支统计卡片、每日收支走势和底部导航](docs/images/android-overview.png) | ![Android 流水明细：按月份查看流水记录](docs/images/android-transactions.png) | ![Android 统计报表：分类占比、金额和笔数](docs/images/android-statistics.png) |
 
 ## 用 Docker Compose 部署
 
