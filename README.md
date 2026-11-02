@@ -13,6 +13,18 @@
 - **身份与安全**：管理员负责开户和重置密码，成员只能修改自己的资料；密码加密保存，登录状态可维持在个人设备上 30 天。
 - **手机客户端**：可安装 Android 应用，填入自己的服务器地址即可使用，并可在应用内检查更新。
 
+## 界面截图
+
+以下截图来自实际运行的应用，使用临时演示账本，金额和记录均为示例数据。
+
+### Web 端
+
+![Web 端总览：侧边导航、收入与支出统计、家庭总余额和每日收支走势](docs/images/web-overview.png)
+
+### Android App
+
+<img src="docs/images/android-app.png" width="320" alt="Android App 总览：手机上的收支统计卡片、每日收支走势和底部导航">
+
 ## 用 Docker Compose 部署
 
 需要 Docker 和 Docker Compose。
