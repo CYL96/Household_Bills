@@ -7,6 +7,7 @@ import { deleteTransaction } from '../api/transactions'
 import type { Account, Transaction, TransactionKind } from '../api/types'
 import { confirmWithBack } from '../composables/confirmWithBack'
 import { useMediaQuery } from '../composables/useMediaQuery'
+import { useWebUpdateBlocker } from '../composables/webUpdates'
 import { markDataChanged } from '../stores/data'
 import { readCategoryEntries } from '../stores/categories'
 import { categoryIcon } from '../utils/categoryIcons'
@@ -388,6 +389,9 @@ async function confirmDeleteRow(row: unknown): Promise<void> {
   if (!isTransactionRow(row)) return
   await confirmDelete(row)
 }
+
+// 删除请求进行中（含删除后的列表刷新）暂缓自动更新。
+useWebUpdateBlocker(() => deletingId.value !== null)
 
 async function confirmDelete(transaction: Transaction): Promise<void> {
   const isTransfer = transaction.kind === 'transfer'

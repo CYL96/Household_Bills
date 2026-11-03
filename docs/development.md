@@ -102,6 +102,21 @@ Go 程序通过进程环境变量读取配置，不会自动加载 `.env`；根�
 | `ALLOWED_ORIGINS` | 可选，逗号分隔的完整来源地址；不填写则要求同 Host |
 | `TEST_DATABASE_URL` | 仅集成测试使用的独立数据库，会清空其中业务表 |
 
+## 网页自动更新与部署
+
+生产构建为 HTML 的 `hb-build-id` meta 与 JavaScript 注入同一个构建标识；开发服务器不启用自动更新。页面启动、重新可见、恢复联网、App 回前台以及前台每两分钟检查站点根入口，使用 `cache: no-store`，失败不刷新、不弹错误。
+
+发现新构建后，等待编辑弹窗、分类未保存草稿、登录输入、确认框和写请求结束，再重新加载当前完整 URL（保留 query/hash）。不清 Cookie、localStorage 或 WebView 资源缓存；仅在内存中的筛选和滚动位置不保证保留。原生客户端 1.0.6 起同时通知网页前后台与原生设置遮挡状态，旧客户端仍可通过网页可见性和前台周期检查更新。
+
+部署必须保持入口和资源一致：
+
+- `/`、SPA 路由和直接访问的 `/index.html` 均需重验证，不得被反向代理设为长期缓存；`/assets/` 下带内容哈希的资源保持长期缓存。
+- 在临时目录构建，例如从 `frontend/` 执行 `npm run build -- --outDir /tmp/household-bills-web-build`。**不要对正在被服务进程读取的 `frontend/dist` 原地构建**，Vite 的 `emptyOutDir` 会先清空目录。
+- 先复制新构建的资源，保留旧哈希资源供已打开的页面加载分包；最后在同一文件系统内原子替换 `index.html`。HTML 中的 meta 和脚本必须来自同一次构建，无需额外版本 JSON。
+- 首次部署本机制后，已打开的旧网页没有检测代码，需手动刷新一次。此后网页升级与 APK 更新分开；HTML 缓存策略修复需更新后端二进制。
+
+自动刷新会话只在 sessionStorage 记录已尝试的目标构建，防止代理返回旧入口导致反复刷新；若无法写入该记录，保留当前页面，由用户手动重新加载。登录仍遵循原有会话有效期。
+
 ## Android 构建、签名与发布
 
 `android/` 是独立的原生 Java 工程（包名 `com.household.bills`），Gradle Wrapper 8.11.1、AGP 8.9.2、JDK 17、compile/target SDK 35、minSdk 26，无第三方运行时依赖。
@@ -139,7 +154,7 @@ cd android
 
 - `GET /api/app-update/`：公开版本查询；未发布安装包时明确返回 `available:false`，不需要账本登录。
 - `GET/HEAD /api/app-update/download/<sha256>/`：下载当前清单指向的安装包；支持 Range，不提供任意文件下载，也不会回落 SPA。
-- 后端每次查询读取最新清单，后续发布 APK 不需要重启服务。网页 UI 更新仍使用「刷新页面缓存」，与 APK 更新分开。
+- 后端每次查询读取最新清单，后续发布 APK 不需要重启服务。网页 UI 使用上面的自动更新机制，「刷新页面缓存」仅作旧网页首次升级和异常兜底，与 APK 更新分开。
 
 Docker Compose 将 `${ANDROID_RELEASE_HOST_DIR:-./android/release}` 只读挂载到 `/app/android-release`；镜像内 `ANDROID_RELEASE_DIR` 已固定指向该目录。自定义宿主目录时，建议给 Gradle 的 `ANDROID_RELEASE_DIR` 和 Compose 的 `ANDROID_RELEASE_HOST_DIR` 使用同一个宿主绝对路径。Compose 的 `.env` 不会自动成为宿主 Gradle 的进程环境；需要在构建终端单独设置。
 

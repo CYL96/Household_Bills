@@ -5,6 +5,7 @@ import { createUser } from '../api/users'
 import { getErrorMessage } from '../api/client'
 import type { CreateUserPayload, User } from '../api/types'
 import { useBackLayer } from '../composables/backNavigation'
+import { useWebUpdateBlocker } from '../composables/webUpdates'
 
 const props = defineProps<{
   modelValue: boolean
@@ -133,6 +134,9 @@ useBackLayer(
     if (!saving.value) closeDialog()
   },
 )
+
+// 用户名、昵称、密码输入与创建请求期间暂缓自动更新。
+useWebUpdateBlocker(() => props.modelValue || saving.value)
 
 async function submit(): Promise<void> {
   if (saving.value || !formRef.value) return

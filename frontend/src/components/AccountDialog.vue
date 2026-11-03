@@ -3,6 +3,7 @@ import { computed, nextTick, reactive, ref, watch } from 'vue'
 import { ElMessage, type FormInstance, type FormRules } from 'element-plus'
 import { useBackLayer } from '../composables/backNavigation'
 import { confirmWithBack } from '../composables/confirmWithBack'
+import { useWebUpdateBlocker } from '../composables/webUpdates'
 import { getErrorMessage } from '../api/client'
 import { createAccount, deleteAccount, updateAccount } from '../api/accounts'
 import type { Account, AccountPayload } from '../api/types'
@@ -179,6 +180,9 @@ useBackLayer(
     if (!busy.value) closeDialog()
   },
 )
+
+// 编辑中的账户表单以及保存/删除请求都暂缓自动更新。
+useWebUpdateBlocker(() => props.modelValue || busy.value)
 
 // 账户归属下拉框覆盖在弹窗之上：返回先收起下拉框，再次返回才关闭弹窗。
 useBackLayer(

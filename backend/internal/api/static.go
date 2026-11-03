@@ -50,7 +50,7 @@ func (a *API) serveSPA(c *gin.Context) {
 
 	if candidate, ok := safeDistPath(root, request.URL.Path); ok {
 		if info, statErr := os.Stat(candidate); statErr == nil && info.Mode().IsRegular() {
-			a.serveFile(c, candidate, info, isAssetPath(request.URL.Path))
+			a.serveFile(c, candidate, info, isHashedAssetPath(request.URL.Path))
 			return
 		}
 	}
@@ -111,4 +111,34 @@ func isAssetPath(requestPath string) bool {
 	}
 	base := path.Base(requestPath)
 	return strings.Contains(base, ".")
+}
+
+// isHashedAssetPath reports whether requestPath points at a build artifact
+// whose filename carries a content hash. Those files may be cached forever;
+// entry documents and any other file must be revalidated so a new build is
+// picked up without stale HTML or stale same-named resources.
+func isHashedAssetPath(requestPath string) bool {
+	if !strings.HasPrefix(requestPath, "/assets/") {
+		return false
+	}
+	base := path.Base(requestPath)
+	if extension := strings.ToLower(path.Ext(base)); extension == ".html" || extension == ".htm" {
+		return false
+	}
+	name := strings.TrimSuffix(base, path.Ext(base))
+	if len(name) < 9 {
+		return false
+	}
+	hashStart := len(name) - 8
+	if name[hashStart-1] != '-' {
+		return false
+	}
+	for i := hashStart; i < len(name); i++ {
+		switch c := name[i]; {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9', c == '-', c == '_':
+		default:
+			return false
+		}
+	}
+	return true
 }

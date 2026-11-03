@@ -32,6 +32,7 @@ import type {
 } from '../api/types'
 import { useBackLayer } from '../composables/backNavigation'
 import { useMediaQuery } from '../composables/useMediaQuery'
+import { useWebUpdateBlocker } from '../composables/webUpdates'
 import { authState, familyMembers } from '../stores/auth'
 import {
   categoryState,
@@ -712,6 +713,9 @@ useBackLayer(
   () => props.modelValue,
   () => closeDialog(),
 )
+
+// 弹窗内日期、账户、归属、分类等输入都可能尚未提交，保存请求同样要等到安全点。
+useWebUpdateBlocker(() => props.modelValue || saving.value)
 
 useBackLayer(
   () => subcategoryOpen.value,

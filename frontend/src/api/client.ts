@@ -1,3 +1,5 @@
+import { holdWebUpdate } from '../composables/webUpdates'
+
 const CSRF_COOKIE_NAME = 'csrftoken'
 const CSRF_HEADER_NAME = 'X-CSRFToken'
 
@@ -272,15 +274,24 @@ export async function request<T>(url: string, options: RequestOptions = {}): Pro
   const method = options.method ?? 'GET'
   const isMutation = method !== 'GET'
 
-  if (isMutation) await ensureCsrfCookie()
+  // A mutation holds update protection until its response has been fully
+  // consumed and any thrown error has travelled back to the caller, so an
+  // automatic reload can never discard a write that was still settling.
+  const releaseUpdateHold = isMutation ? holdWebUpdate() : null
 
-  const response = await performRequest(url, method, options.body)
-  const payload = await readResponseBody(response)
+  try {
+    if (isMutation) await ensureCsrfCookie()
 
-  if (!response.ok) {
-    if (response.status === 401) notifyUnauthorized()
-    throw buildApiError(response.status, payload)
+    const response = await performRequest(url, method, options.body)
+    const payload = await readResponseBody(response)
+
+    if (!response.ok) {
+      if (response.status === 401) notifyUnauthorized()
+      throw buildApiError(response.status, payload)
+    }
+
+    return payload as T
+  } finally {
+    releaseUpdateHold?.()
   }
-
-  return payload as T
 }

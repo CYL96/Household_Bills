@@ -67,3 +67,59 @@ func TestSPAFallbackAndAPI404(t *testing.T) {
 		t.Fatalf("缺失静态资源应返回 404，实际 %d", status)
 	}
 }
+
+func TestStaticCacheControl(t *testing.T) {
+	dist := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dist, "assets"), 0o755); err != nil {
+		t.Fatalf("创建静态资源目录失败: %v", err)
+	}
+	const indexHTML = "<!doctype html><html><body>household-bills-spa</body></html>"
+	const appJS = "console.log('household-bills-asset')"
+	const licenseText = "household-bills-license"
+	write := func(name, content string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(dist, name), []byte(content), 0o644); err != nil {
+			t.Fatalf("写入 %s 失败: %v", name, err)
+		}
+	}
+	write("index.html", indexHTML)
+	write(filepath.Join("assets", "index-CclxteCe.js"), appJS)
+	write("lucide-LICENSE.txt", licenseText)
+
+	handler := api.New(config.Config{FrontendDist: dist, CookieSecure: false},
+		nil, log.New(io.Discard, "", 0))
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	cases := []struct {
+		path  string
+		body  string
+		cache string
+	}{
+		{"/", indexHTML, "no-cache"},
+		{"/transactions", indexHTML, "no-cache"},
+		{"/index.html", indexHTML, "no-cache"},
+		{"/lucide-LICENSE.txt", licenseText, "no-cache"},
+		{"/assets/index-CclxteCe.js", appJS, "public, max-age=31536000, immutable"},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.path, func(t *testing.T) {
+			response, err := http.Get(server.URL + testCase.path)
+			if err != nil {
+				t.Fatalf("请求 %s 失败: %v", testCase.path, err)
+			}
+			defer response.Body.Close()
+			body, err := io.ReadAll(response.Body)
+			if err != nil {
+				t.Fatalf("读取 %s 失败: %v", testCase.path, err)
+			}
+			if response.StatusCode != http.StatusOK || string(body) != testCase.body {
+				t.Fatalf("%s 返回异常: status=%d body=%q",
+					testCase.path, response.StatusCode, body)
+			}
+			if got := response.Header.Get("Cache-Control"); got != testCase.cache {
+				t.Fatalf("%s Cache-Control = %q，期望 %q", testCase.path, got, testCase.cache)
+			}
+		})
+	}
+}

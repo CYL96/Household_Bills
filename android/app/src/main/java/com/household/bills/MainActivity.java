@@ -94,6 +94,14 @@ public class MainActivity extends Activity {
      */
     private static final String SETTINGS_URI = "household-bills://settings";
 
+    /**
+     * Fire-and-forget events that tell the current same-origin page whether it
+     * is actually visible. The page owns the version check and reload policy;
+     * older frontends do not listen and simply ignore these events.
+     */
+    private static final String PAGE_RESUME_EVENT = "household-bills:resume";
+    private static final String PAGE_PAUSE_EVENT = "household-bills:pause";
+
     private static final String KEY_SAVED_ORIGIN = "saved_origin";
     private static final String KEY_VIEW_ORIGIN = "saved_view_origin";
     private static final String KEY_UI_STATE = "saved_ui_state";
@@ -174,6 +182,10 @@ public class MainActivity extends Activity {
     private TextView errorDetailView;
 
     private int state = STATE_WEB;
+    /** True between onResume and onPause, so native screens and the page agree. */
+    private boolean activityResumed;
+    /** Last activity flag delivered to the current document, null when unknown. */
+    private Boolean pageActivityNotified;
     private int settingsReturnState = STATE_WEB;
     private boolean switchingOrigin;
     private int switchGeneration;
@@ -838,6 +850,9 @@ public class MainActivity extends Activity {
                 return;
             }
             currentMainFrameUrl = url;
+            // A new main-frame document does not inherit the previous
+            // document's delivered pause/resume state.
+            pageActivityNotified = null;
             mainFrameLoading = true;
             progressBar.setProgress(5);
             if (state == STATE_WEB) {
@@ -854,8 +869,19 @@ public class MainActivity extends Activity {
                 return;
             }
             mainFrameLoading = false;
+            // This callback is main-frame only, and isCurrent() above rejected
+            // stale WebViews, so this is the document that just became current.
+            // It must not inherit the previous document's delivered state.
+            pageActivityNotified = null;
             progressBar.setProgress(100);
             progressBar.setVisibility(View.GONE);
+            // Page initialization runs its own startup check while visible. If
+            // the activity is still backgrounded or a native settings/error
+            // screen covers the page, the new document must be paused now;
+            // loading-time notifications were skipped on purpose.
+            if (!activityResumed || state != STATE_WEB) {
+                syncWebPageActivity();
+            }
         }
 
         @Override
@@ -1159,6 +1185,9 @@ public class MainActivity extends Activity {
                 cacheRefreshButton.setEnabled(hasSavedOrigin && !switchingOrigin);
             }
         }
+        // The web page is hidden by native settings/error screens without any
+        // window event, so tell it about the change here, next to the state.
+        syncWebPageActivity();
         refreshUpdateUi();
     }
 
@@ -1356,6 +1385,7 @@ public class MainActivity extends Activity {
         WebView fresh = new WebView(this);
         fresh.setBackgroundColor(COLOR_SURFACE);
         webView = fresh;
+        pageActivityNotified = null;
         contentFrame.addView(fresh, 0, new FrameLayout.LayoutParams(MATCH, MATCH));
         configureWebView();
         updateChrome();
@@ -2245,6 +2275,43 @@ public class MainActivity extends Activity {
     // Lifecycle
     // ------------------------------------------------------------------
 
+    /**
+     * Tells the current same-origin page whether the user can actually see it.
+     *
+     * <p>WebView does not reliably update {@code document.visibilityState} when
+     * the activity is paused or a native settings/error screen covers the page,
+     * so the shell owns this signal. It is evaluated as plain JavaScript (no
+     * JavaScript bridge) and never reloads, clears caches, or touches cookies.
+     * Only the exact event name is sent, so pages that do not know it ignore
+     * it unchanged.</p>
+     */
+    private void syncWebPageActivity() {
+        boolean active = activityResumed && state == STATE_WEB;
+        if (pageActivityNotified != null && pageActivityNotified == active) {
+            return;
+        }
+        WebView view = webView;
+        if (view == null || switchingOrigin || committedOrigin == null) {
+            return;
+        }
+        String pageOrigin = ServerAddress.originOf(view.getUrl());
+        if (pageOrigin == null || !committedOrigin.equals(pageOrigin)) {
+            // about:blank, the native error screen, or no committed page yet.
+            return;
+        }
+        if (mainFrameLoading) {
+            // A half-loaded document may not have registered listeners yet;
+            // onPageFinished sends the current state once the frame commits.
+            return;
+        }
+        pageActivityNotified = active;
+        view.evaluateJavascript(
+                "window.dispatchEvent(new Event('"
+                        + (active ? PAGE_RESUME_EVENT : PAGE_PAUSE_EVENT)
+                        + "'));",
+                null);
+    }
+
     private void hideKeyboard() {
         View focused = getCurrentFocus();
         if (focused == null) {
@@ -2280,6 +2347,9 @@ public class MainActivity extends Activity {
 
     @Override
     protected void onPause() {
+        activityResumed = false;
+        // Dispatch before webView.onPause() suspends page timers.
+        syncWebPageActivity();
         super.onPause();
         if (webView != null) {
             webView.onPause();
@@ -2294,6 +2364,10 @@ public class MainActivity extends Activity {
         if (webView != null) {
             webView.onResume();
         }
+        activityResumed = true;
+        // The page checks for a new build without reloading or touching its
+        // cookies/cache; unsaved edits are only ever discarded by the page.
+        syncWebPageActivity();
         if (awaitingInstallPermission) {
             awaitingInstallPermission = false;
             handleInstallPermissionReturn();

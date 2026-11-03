@@ -13,6 +13,7 @@ import {
 } from '../stores/auth'
 import { displayName } from '../utils/user'
 import { useBackLayer } from '../composables/backNavigation'
+import { useWebUpdateBlocker } from '../composables/webUpdates'
 import UserAvatar from './UserAvatar.vue'
 
 const props = defineProps<{
@@ -205,6 +206,9 @@ function closeDialog(): void {
 
 // closeDialog already keeps the dialog open while saving or uploading.
 useBackLayer(() => props.modelValue, closeDialog)
+
+// 头像选择、密码输入以及保存/上传请求期间暂缓自动更新。
+useWebUpdateBlocker(() => props.modelValue || busy.value)
 
 function chooseFile(): void {
   if (busy.value) return

@@ -17,6 +17,7 @@ import { getErrorMessage } from '../api/client'
 import type { User } from '../api/types'
 import { deleteUser } from '../api/users'
 import { confirmWithBack } from '../composables/confirmWithBack'
+import { useWebUpdateBlocker } from '../composables/webUpdates'
 import {
   addAuthMember,
   authState,
@@ -31,6 +32,9 @@ const errorMessage = ref('')
 const dialogVisible = ref(false)
 const editingUserId = ref<number | null>(null)
 const deletingId = ref<number | null>(null)
+
+// 删除成员的确认与请求进行期间暂缓自动更新。
+useWebUpdateBlocker(() => deletingId.value !== null)
 
 const household = computed(() => authState.household)
 const isAdmin = computed(() => authState.user?.is_admin === true)

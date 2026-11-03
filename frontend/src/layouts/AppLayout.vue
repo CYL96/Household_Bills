@@ -14,6 +14,7 @@ import {
 import AppNav from '../components/AppNav.vue'
 import AppSettingsButton from '../components/AppSettingsButton.vue'
 import { useBackLayer } from '../composables/backNavigation'
+import { useWebUpdateBlocker } from '../composables/webUpdates'
 import { getErrorMessage } from '../api/client'
 import UserAvatar from '../components/UserAvatar.vue'
 import UserProfileDialog from '../components/UserProfileDialog.vue'
@@ -78,6 +79,9 @@ async function handleLogout(): Promise<void> {
     navOpen.value = false
   }
 }
+
+// 退出登录请求及随后的组件收尾期间暂缓自动更新。
+useWebUpdateBlocker(() => loggingOut.value)
 
 function openProfile(): void {
   navOpen.value = false

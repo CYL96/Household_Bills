@@ -33,6 +33,7 @@ import {
 } from '../stores/categories'
 import { categoryIcon } from '../utils/categoryIcons'
 import { useBackLayer } from '../composables/backNavigation'
+import { useWebUpdateBlocker } from '../composables/webUpdates'
 import CategoryEditor from './CategoryEditor.vue'
 
 const props = defineProps<{
@@ -930,6 +931,17 @@ useBackLayer(
     }
     closeDialog()
   },
+)
+
+// 未保存的草稿、进行中的编辑/拖动以及保存请求期间暂缓自动更新。
+// 关闭弹窗会清空草稿并令 modelValue 为 false，因此取消后立即解除保护。
+useWebUpdateBlocker(
+  () =>
+    saving.value ||
+    (props.modelValue &&
+      (dirtyKinds.value.length > 0 ||
+        editorState.value !== null ||
+        dragBusy.value)),
 )
 
 function handleDialogClosed(): void {

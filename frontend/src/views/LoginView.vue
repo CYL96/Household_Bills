@@ -5,6 +5,7 @@ import { ElMessage, type FormInstance, type FormRules } from 'element-plus'
 import { Lock, User } from '@element-plus/icons-vue'
 import { getErrorMessage } from '../api/client'
 import AppSettingsButton from '../components/AppSettingsButton.vue'
+import { useWebUpdateBlocker } from '../composables/webUpdates'
 import { authState, bootstrapAuth, loginUser } from '../stores/auth'
 
 const route = useRoute()
@@ -18,6 +19,14 @@ const loginForm = reactive({
   password: '',
   remember: false,
 })
+
+// 登录请求进行中或已填写账号/密码时不自动刷新；空白登录页仍允许更新。
+useWebUpdateBlocker(
+  () =>
+    loggingIn.value ||
+    loginForm.username.length > 0 ||
+    loginForm.password.length > 0,
+)
 
 const bootRetrying = ref(false)
 
