@@ -19,6 +19,7 @@ import {
   Backpack as LucideBackpack,
   Bacon as LucideBacon,
   Badge as LucideBadge,
+  BadgeDollarSign as LucideBadgeDollarSign,
   BadgePercent as LucideBadgePercent,
   BaggageClaim as LucideBaggageClaim,
   BallWave as LucideBallWave,
@@ -199,6 +200,7 @@ import {
   Gamepad2 as LucideGamepad2,
   GamepadDirectional as LucideGamepadDirectional,
   Gauge as LucideGauge,
+  Gavel as LucideGavel,
   Gem as LucideGem,
   Germ as LucideGerm,
   Gift as LucideGift,
@@ -309,6 +311,7 @@ import {
   Package2 as LucidePackage2,
   PackageCheck as LucidePackageCheck,
   PackageOpen as LucidePackageOpen,
+  PackageSearch as LucidePackageSearch,
   PackageX as LucidePackageX,
   PaintBucket as LucidePaintBucket,
   PaintRoller as LucidePaintRoller,
@@ -356,6 +359,7 @@ import {
   Receipt as LucideReceipt,
   ReceiptText as LucideReceiptText,
   Recycle as LucideRecycle,
+  RefreshCw as LucideRefreshCw,
   Refrigerator as LucideRefrigerator,
   Repeat as LucideRepeat,
   Ribbon as LucideRibbon,
@@ -744,7 +748,7 @@ export const CATEGORY_ICON_OPTIONS = [
   {
     id: 'lucide-printer-3d',
     names: ['3D打印'],
-    label: '三维打印',
+    label: '3D打印机',
     group: 'shopping',
     component: LucidePrinter3d,
   },
@@ -835,6 +839,10 @@ export const CATEGORY_ICON_OPTIONS = [
   { id: 'lucide-mouse', names: [], label: '鼠标', group: 'shopping', component: LucideMouse },
   { id: 'lucide-hard-drive', names: [], label: '移动硬盘', group: 'shopping', component: LucideHardDrive },
   { id: 'lucide-usb', names: [], label: '优盘', group: 'shopping', component: LucideUsb },
+  { id: 'lucide-badge-dollar-sign', names: [], label: '二手出售', group: 'shopping', component: LucideBadgeDollarSign },
+  { id: 'lucide-package-search', names: [], label: '二手淘货', group: 'shopping', component: LucidePackageSearch },
+  { id: 'lucide-gavel', names: [], label: '二手拍卖', group: 'shopping', component: LucideGavel },
+  { id: 'lucide-refresh-cw', names: [], label: '以旧换新', group: 'shopping', component: LucideRefreshCw },
 
   // Home
   {
@@ -1019,7 +1027,7 @@ export const CATEGORY_ICON_OPTIONS = [
   {
     id: 'lucide-car',
     names: ['交通'],
-    label: '交通',
+    label: '汽车',
     group: 'transport',
     component: LucideCar,
   },
