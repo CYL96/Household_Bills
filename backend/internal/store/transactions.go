@@ -22,8 +22,11 @@ const transactionSelect = `
 	JOIN users u ON u.id = t.created_by
 	LEFT JOIN users o ON o.id = t.owner_user_id`
 
-func (s *Store) ListTransactions(ctx context.Context, householdID int64, filters TransactionFilters) ([]Transaction, error) {
-	query := transactionSelect + " WHERE t.household_id = $1"
+// transactionWhere builds the shared WHERE clause for transaction listings and
+// totals. The fragments are positional arguments appended in a stable order so
+// both callers apply identical filter semantics.
+func transactionWhere(householdID int64, filters TransactionFilters) (string, []any) {
+	where := "t.household_id = $1"
 	args := []any{householdID}
 	addArgument := func(value any) string {
 		args = append(args, value)
@@ -33,34 +36,39 @@ func (s *Store) ListTransactions(ctx context.Context, householdID int64, filters
 	if filters.MonthStart != "" && filters.MonthEnd != "" {
 		monthStart := addArgument(filters.MonthStart)
 		monthEnd := addArgument(filters.MonthEnd)
-		query += fmt.Sprintf(
+		where += fmt.Sprintf(
 			" AND t.tx_date >= %s::timestamp AND t.tx_date < %s::timestamp",
 			monthStart, monthEnd)
 	}
 	if filters.AccountID != nil {
 		accountParam := addArgument(*filters.AccountID)
-		query += fmt.Sprintf(
+		where += fmt.Sprintf(
 			" AND (t.account_id = %s OR t.transfer_account_id = %s)",
 			accountParam, accountParam)
 	}
 	if filters.Kind != "" {
-		query += " AND t.kind = " + addArgument(filters.Kind)
+		where += " AND t.kind = " + addArgument(filters.Kind)
 	}
 	if filters.Query != "" {
 		categoryParam := addArgument(filters.Query)
 		noteParam := addArgument(filters.Query)
 		transferNameParam := addArgument(filters.Query)
-		query += fmt.Sprintf(
+		where += fmt.Sprintf(
 			" AND (strpos(lower(t.category), lower(%s)) > 0"+
 				" OR strpos(lower(t.note), lower(%s)) > 0"+
 				" OR strpos(lower(COALESCE(ta.name, '')), lower(%s)) > 0)",
 			categoryParam, noteParam, transferNameParam)
 	}
 	if len(filters.Categories) > 0 {
-		query += " AND t.category = ANY(" + addArgument(filters.Categories) + "::text[])"
+		where += " AND t.category = ANY(" + addArgument(filters.Categories) + "::text[])"
 	}
+	return where, args
+}
 
-	query += " ORDER BY t.tx_date DESC, t.id DESC"
+func (s *Store) ListTransactions(ctx context.Context, householdID int64, filters TransactionFilters) ([]Transaction, error) {
+	where, args := transactionWhere(householdID, filters)
+	query := transactionSelect + " WHERE " + where +
+		" ORDER BY t.tx_date DESC, t.id DESC"
 
 	rows, err := s.pool.Query(ctx, query, args...)
 	if err != nil {
@@ -80,6 +88,35 @@ func (s *Store) ListTransactions(ctx context.Context, householdID int64, filters
 		return nil, fmt.Errorf("读取交易失败: %w", err)
 	}
 	return transactions, nil
+}
+
+// SumTransactions totals income and expense over exactly the filters used by
+// ListTransactions. Transfer rows are excluded by the FILTER aggregates, so
+// they never inflate either side. The destination-account LEFT JOIN keeps the
+// shared search filter valid when q matches a transfer account name.
+func (s *Store) SumTransactions(ctx context.Context, householdID int64, filters TransactionFilters) (TransactionTotals, error) {
+	where, args := transactionWhere(householdID, filters)
+	var incomeText, expenseText string
+	err := s.pool.QueryRow(ctx, `
+		SELECT COALESCE(SUM(t.amount_cents) FILTER (WHERE t.kind = 'income'), 0)::text,
+		       COALESCE(SUM(t.amount_cents) FILTER (WHERE t.kind = 'expense'), 0)::text
+		FROM transactions t
+		LEFT JOIN accounts ta ON ta.id = t.transfer_account_id
+		WHERE `+where, args...).Scan(&incomeText, &expenseText)
+	if err != nil {
+		return TransactionTotals{}, fmt.Errorf("读取交易汇总失败: %w", err)
+	}
+
+	totals := TransactionTotals{}
+	totals.IncomeCents, err = parseAggregateCents(incomeText)
+	if err != nil {
+		return TransactionTotals{}, fmt.Errorf("读取交易收入汇总失败: %w", err)
+	}
+	totals.ExpenseCents, err = parseAggregateCents(expenseText)
+	if err != nil {
+		return TransactionTotals{}, fmt.Errorf("读取交易支出汇总失败: %w", err)
+	}
+	return totals, nil
 }
 
 func (s *Store) CreateTransaction(ctx context.Context, householdID, userID int64, input TransactionInput) (Transaction, error) {

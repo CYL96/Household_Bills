@@ -99,6 +99,7 @@ func New(cfg config.Config, st *store.Store, logger *log.Logger) http.Handler {
 	authenticated.PATCH("/accounts/:id/", a.handlePatchAccount)
 	authenticated.DELETE("/accounts/:id/", a.handleDeleteAccount)
 	authenticated.GET("/transactions/", a.handleListTransactions)
+	authenticated.GET("/transactions/totals/", a.handleTransactionTotals)
 	authenticated.POST("/transactions/", a.handleCreateTransaction)
 	authenticated.PATCH("/transactions/:id/", a.handlePatchTransaction)
 	authenticated.DELETE("/transactions/:id/", a.handleDeleteTransaction)

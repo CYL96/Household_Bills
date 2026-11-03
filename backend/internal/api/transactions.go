@@ -8,6 +8,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"household-bills/backend/internal/money"
 	"household-bills/backend/internal/store"
 )
 
@@ -35,13 +36,10 @@ type transactionPatchRequest struct {
 	Owner           json.RawMessage `json:"owner"`
 }
 
-func (a *API) handleListTransactions(c *gin.Context) {
-	auth, ok := currentAuth(c)
-	if !ok {
-		abortDetail(c, http.StatusUnauthorized, "请先登录。")
-		return
-	}
-
+// parseTransactionFilters validates the shared listing/totals query parameters.
+// It aborts the request and returns false on the first invalid field, so both
+// endpoints expose identical filtering and error semantics.
+func parseTransactionFilters(c *gin.Context) (store.TransactionFilters, bool) {
 	filters := store.TransactionFilters{}
 	monthValue, monthPresent := c.GetQuery("month")
 	startValue, startPresent := c.GetQuery("start")
@@ -49,19 +47,19 @@ func (a *API) handleListTransactions(c *gin.Context) {
 	switch {
 	case monthPresent && (startPresent || endPresent):
 		abortFields(c, map[string][]string{"month": {"month 不能与 start、end 同时使用。"}})
-		return
+		return filters, false
 	case startPresent != endPresent:
 		missing := "start"
 		if startPresent {
 			missing = "end"
 		}
 		abortFields(c, map[string][]string{missing: {"start 和 end 必须同时提供。"}})
-		return
+		return filters, false
 	case startPresent:
 		rangeStart, rangeEnd, fields := dayRange(startValue, endValue)
 		if fields != nil {
 			abortFields(c, fields)
-			return
+			return filters, false
 		}
 		filters.MonthStart = rangeStart
 		filters.MonthEnd = rangeEnd
@@ -69,7 +67,7 @@ func (a *API) handleListTransactions(c *gin.Context) {
 		monthStart, monthEnd, valid := monthRange(monthValue)
 		if !valid {
 			abortFields(c, map[string][]string{"month": {"月份格式应为 YYYY-MM。"}})
-			return
+			return filters, false
 		}
 		filters.MonthStart = monthStart
 		filters.MonthEnd = monthEnd
@@ -78,7 +76,7 @@ func (a *API) handleListTransactions(c *gin.Context) {
 		accountID, valid := positiveID(accountValue)
 		if !valid {
 			abortFields(c, map[string][]string{"account": {"账户参数无效。"}})
-			return
+			return filters, false
 		}
 		filters.AccountID = &accountID
 	}
@@ -86,7 +84,7 @@ func (a *API) handleListTransactions(c *gin.Context) {
 		kind, valid := normalizeKind(kindValue)
 		if !valid {
 			abortFields(c, map[string][]string{"kind": {"类型只能是 income、expense 或 transfer。"}})
-			return
+			return filters, false
 		}
 		filters.Kind = kind
 	}
@@ -96,7 +94,7 @@ func (a *API) handleListTransactions(c *gin.Context) {
 			category, message := cleanText(categoryValue, 64, "分类")
 			if message != "" {
 				abortFields(c, map[string][]string{"category": {message}})
-				return
+				return filters, false
 			}
 			categories = append(categories, category)
 		}
@@ -106,9 +104,23 @@ func (a *API) handleListTransactions(c *gin.Context) {
 		queryValue = strings.TrimSpace(queryValue)
 		if strings.ContainsRune(queryValue, '\x00') {
 			abortFields(c, map[string][]string{"q": {"搜索内容包含非法字符。"}})
-			return
+			return filters, false
 		}
 		filters.Query = queryValue
+	}
+	return filters, true
+}
+
+func (a *API) handleListTransactions(c *gin.Context) {
+	auth, ok := currentAuth(c)
+	if !ok {
+		abortDetail(c, http.StatusUnauthorized, "请先登录。")
+		return
+	}
+
+	filters, ok := parseTransactionFilters(c)
+	if !ok {
+		return
 	}
 
 	transactions, err := a.store.ListTransactions(
@@ -123,6 +135,34 @@ func (a *API) handleListTransactions(c *gin.Context) {
 		response = append(response, transactionResponse(transaction))
 	}
 	c.JSON(http.StatusOK, response)
+}
+
+// handleTransactionTotals returns the filtered income and expense sums using the
+// same query parameters as the listing endpoint. The listing stays an array so
+// existing clients keep their contract.
+func (a *API) handleTransactionTotals(c *gin.Context) {
+	auth, ok := currentAuth(c)
+	if !ok {
+		abortDetail(c, http.StatusUnauthorized, "请先登录。")
+		return
+	}
+
+	filters, ok := parseTransactionFilters(c)
+	if !ok {
+		return
+	}
+
+	totals, err := a.store.SumTransactions(
+		c.Request.Context(), auth.User.HouseholdID, filters)
+	if err != nil {
+		a.logger.Printf("读取交易汇总失败: %v", err)
+		abortDetail(c, http.StatusInternalServerError, "服务器内部错误。")
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"income":  money.Format(totals.IncomeCents),
+		"expense": money.Format(totals.ExpenseCents),
+	})
 }
 
 func (a *API) handleCreateTransaction(c *gin.Context) {

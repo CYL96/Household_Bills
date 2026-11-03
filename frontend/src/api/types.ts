@@ -110,6 +110,12 @@ export interface TransactionFilters {
   category?: string[]
 }
 
+/** Aggregated income/expense (decimal strings) for all transactions matching the filters. */
+export interface TransactionTotals {
+  income: string
+  expense: string
+}
+
 export interface SummaryCategory {
   category: string
   amount: string

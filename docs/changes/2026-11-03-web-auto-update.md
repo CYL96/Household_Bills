@@ -40,7 +40,7 @@
 
 验证中发现并修复了 WebView 时序问题：原生 resume 可能先于 `document.visibilityState` 恢复，若可见性事件仍受 30 秒节流，会遗漏本次立即检查。修复为重新可见和联网恢复立即检查、保留单飞保护后，重新构建并通过上述真实 Activity 恢复场景。
 
-未运行全量回归、Docker 构建、所有表单逐项实机操作、真机测试、正式签名发布或线上部署。已验证的写请求延迟是浏览器层暂缓后继续发送到真实后端，不是模拟 API 成功响应。
+实现阶段未运行全量回归、Docker 构建、所有表单逐项实机操作或真机测试；正式 APK 后续发布见下文，未部署线上网页或后端。已验证的写请求延迟是浏览器层暂缓后继续发送到真实后端，不是模拟 API 成功响应。
 
 ## 兼容与部署
 
@@ -48,4 +48,15 @@
 - 首次部署本机制时，已经打开的旧网页没有检测代码，需手动刷新一次。以后升级使用自动检测；原有「刷新页面缓存」保留为异常兜底。
 - 在临时 outDir 构建，先复制新资源并保留旧哈希资源，再原子替换同一构建的 `index.html`；不要在正在服务的 `frontend/dist` 原地执行会清空目录的构建。
 - 只保证当前完整 URL 不变，不持久化仅在内存中的筛选、滚动或已经取消的草稿。登录有效期仍遵循既有认证策略。
-- 本次完成源码、文档、Debug 构建与隔离运行验证；未发布正式 APK，未切换线上网页或后端。
+- 初次交付完成源码、文档、Debug 构建与隔离运行验证；随后按用户要求发布正式 APK，未切换线上网页或后端。
+
+## 正式 APK 发布（2026-11-03）
+
+- 使用既有正式签名执行 `nix-shell --run 'android/gradlew -p android --offline --no-daemon --console=plain :app:publishRelease'`，构建与发布成功，原子更新 `android/release/latest.json`。
+- 发布版本：**1.0.6（versionCode 7）**，最低 Android API 26；APK 大小 **52,772 字节**，未启用 debuggable。
+- APK：`android/release/household-bills-7-850a0c0d20c675c57082024e851763bdfcb3f785453dcc890384bb190f05f46b.apk`。
+- SHA-256：`850a0c0d20c675c57082024e851763bdfcb3f785453dcc890384bb190f05f46b`。
+- `apksigner verify --verbose --print-certs` 验证 v2 签名通过；签名证书 SHA-256 为 `4aedbbd0ea296d721d1263120fb78765bd30fd1ee8ce47c2eaad07843c6f8658`，与上一正式版本及既有签名密钥一致，可用于覆盖升级。发布前后均未生成新签名密钥。
+- 本机 `http://127.0.0.1:9890/api/app-update/` 与公网 `https://bill.bykkyy.top:888/api/app-update/` 均返回 1.0.6 / 7；两处完整 APK 下载的字节数与 SHA-256 均匹配发布清单。
+- 未重复执行正式 APK 安装与交互测试；本任务前面的 API 35 行为验证使用 Debug APK，不能等同于正式包安装验证。
+- 本次仅发布 APK，未部署网页或更新后端二进制。发布后读取公网根入口，尚无 `hb-build-id` 标记；网页自动检测和编辑保护需部署本任务的网页代码后才会生效，不能只升级 APK。

@@ -15,10 +15,16 @@ import TransactionDialog from '../components/TransactionDialog.vue'
 import TransactionList from '../components/TransactionList.vue'
 import { listAccounts } from '../api/accounts'
 import { getErrorMessage } from '../api/client'
-import { listTransactions } from '../api/transactions'
-import type { Account, Transaction, TransactionKind } from '../api/types'
+import { getTransactionTotals, listTransactions } from '../api/transactions'
+import type {
+  Account,
+  Transaction,
+  TransactionFilters,
+  TransactionKind,
+  TransactionTotals,
+} from '../api/types'
 import { dataVersion } from '../stores/data'
-import { currentMonth, formatMonthLabel } from '../utils/format'
+import { currentMonth, formatMoney } from '../utils/format'
 
 const route = useRoute()
 const router = useRouter()
@@ -76,6 +82,12 @@ const loading = ref(true)
 const accountsLoading = ref(true)
 const accountsError = ref('')
 const listError = ref('')
+/**
+ * `null` means no successful totals for the current filter snapshot yet, so
+ * the UI renders an em dash instead of a misleading 0.00.
+ */
+const totals = ref<TransactionTotals | null>(null)
+const totalsError = ref('')
 
 const dialogVisible = ref(false)
 const initialKind = ref<TransactionKind>('expense')
@@ -84,11 +96,22 @@ let searchTimer: ReturnType<typeof setTimeout> | null = null
 let transactionsRequest = 0
 let accountsRequest = 0
 
-const resultsTitle = computed(() =>
-  monthFilter.value
-    ? `${formatMonthLabel(monthFilter.value)}流水`
-    : '全部月份流水',
-)
+const totalsDisplay = computed(() => ({
+  expense: totals.value ? formatMoney(totals.value.expense) : '—',
+  income: totals.value ? formatMoney(totals.value.income) : '—',
+}))
+
+/** Snapshots every active filter so the list and totals requests share it. */
+function activeFilters(): TransactionFilters {
+  return {
+    month: monthFilter.value ?? undefined,
+    account:
+      typeof accountFilter.value === 'number' ? accountFilter.value : undefined,
+    kind: kindFilter.value || undefined,
+    q: searchQuery.value.trim() || undefined,
+    category: [...categoryFilter.value],
+  }
+}
 
 const hasNoAccounts = computed(
   () => !accountsLoading.value && !accountsError.value && accounts.value.length === 0,
@@ -112,26 +135,31 @@ async function loadAccounts(): Promise<void> {
 
 async function loadTransactions(): Promise<void> {
   const request = ++transactionsRequest
+  const filters = activeFilters()
   loading.value = true
   listError.value = ''
-  try {
-    const result = await listTransactions({
-      month: monthFilter.value ?? undefined,
-      account:
-        typeof accountFilter.value === 'number' ? accountFilter.value : undefined,
-      kind: kindFilter.value || undefined,
-      q: searchQuery.value.trim() || undefined,
-      category: categoryFilter.value,
-    })
-    if (request !== transactionsRequest) return
-    transactions.value = result
-  } catch (error) {
-    if (request !== transactionsRequest) return
+  totalsError.value = ''
+  // Clear the previous snapshot's totals before awaiting so a slow totals
+  // response can never show old numbers under a new filter selection.
+  totals.value = null
+  const [listResult, totalsResult] = await Promise.allSettled([
+    listTransactions(filters),
+    getTransactionTotals(filters),
+  ] as const)
+  // Both requests share this snapshot; a newer selection discards both.
+  if (request !== transactionsRequest) return
+  if (listResult.status === 'fulfilled') {
+    transactions.value = listResult.value
+  } else {
     transactions.value = []
-    listError.value = getErrorMessage(error)
-  } finally {
-    if (request === transactionsRequest) loading.value = false
+    listError.value = getErrorMessage(listResult.reason)
   }
+  if (totalsResult.status === 'fulfilled') {
+    totals.value = totalsResult.value
+  } else {
+    totalsError.value = getErrorMessage(totalsResult.reason)
+  }
+  loading.value = false
 }
 
 function openCreate(kind: TransactionKind = 'expense'): void {
@@ -208,6 +236,8 @@ watch(searchQuery, () => {
   // Invalidate any in-flight request immediately so old query results cannot
   // briefly replace the list while the next search waits for the debounce.
   transactionsRequest += 1
+  totals.value = null
+  totalsError.value = ''
   if (searchTimer !== null) clearTimeout(searchTimer)
   searchTimer = setTimeout(() => {
     searchTimer = null
@@ -351,6 +381,29 @@ onBeforeUnmount(() => {
       </div>
     </section>
 
+    <section
+      class="surface-card totals-panel"
+      aria-label="当前筛选的支出与收入合计"
+      :aria-busy="loading"
+      title="按当前筛选统计全部记录，不含转账"
+    >
+      <div class="totals-cell totals-cell--expense">
+        <span class="totals-label">支出合计</span>
+        <strong class="totals-amount money-number">{{ totalsDisplay.expense }}</strong>
+      </div>
+      <div class="totals-cell totals-cell--income">
+        <span class="totals-label">收入合计</span>
+        <strong class="totals-amount money-number">{{ totalsDisplay.income }}</strong>
+      </div>
+    </section>
+
+    <div v-if="totalsError" class="inline-note inline-note--error" role="alert">
+      <span>统计加载失败：{{ totalsError }}</span>
+      <el-button text type="primary" :icon="RefreshLeft" @click="loadTransactions">
+        重新加载
+      </el-button>
+    </div>
+
     <div v-if="listError" class="surface-card list-error">
       <EmptyState
         title="暂时无法加载流水明细"
@@ -366,16 +419,10 @@ onBeforeUnmount(() => {
     </div>
 
     <section v-else class="surface-card ledger-panel">
-      <div class="results-head">
-        <div>
-          <h3>{{ resultsTitle }}</h3>
-          <p>
-            <span v-if="loading">正在加载记录…</span>
-            <span v-else>共 {{ transactions.length }} 笔记录</span>
-          </p>
-        </div>
-        <span class="results-mark" aria-hidden="true">账</span>
-      </div>
+      <p class="results-head">
+        <span v-if="loading">正在加载记录…</span>
+        <span v-else>共 {{ transactions.length }} 笔记录</span>
+      </p>
 
       <TransactionList
         :transactions="transactions"
@@ -450,6 +497,51 @@ onBeforeUnmount(() => {
 .filter-panel {
   padding: 14px 16px;
   margin-bottom: 15px;
+}
+
+.totals-panel {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  min-width: 0;
+  margin-bottom: 15px;
+  padding: 11px 18px;
+}
+
+.totals-cell {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  gap: 3px;
+}
+
+.totals-cell + .totals-cell {
+  margin-left: 18px;
+  padding-left: 18px;
+  border-left: 1px solid var(--hb-line);
+}
+
+.totals-label {
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+}
+
+.totals-amount {
+  font-family: var(--hb-display);
+  font-size: 20px;
+  font-weight: 600;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+}
+
+.totals-cell--expense .totals-label,
+.totals-cell--expense .totals-amount {
+  color: var(--hb-terracotta);
+}
+
+.totals-cell--income .totals-label,
+.totals-cell--income .totals-amount {
+  color: var(--hb-teal);
 }
 
 .category-filter {
@@ -556,34 +648,10 @@ onBeforeUnmount(() => {
 }
 
 .results-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
+  margin: 0;
   padding: 0 2px 14px;
-}
-
-.results-head h3 {
-  font-size: 17px;
-}
-
-.results-head p {
-  margin-top: 3px;
   color: var(--hb-ink-faint);
   font-size: 11px;
-}
-
-.results-mark {
-  display: grid;
-  width: 32px;
-  height: 32px;
-  place-items: center;
-  color: var(--hb-teal);
-  background: var(--hb-teal-faint);
-  border: 1px solid #d9eae5;
-  border-radius: 10px;
-  font-family: var(--hb-display);
-  font-size: 14px;
 }
 
 .list-error {
@@ -597,6 +665,20 @@ onBeforeUnmount(() => {
 
   .filter-panel {
     padding: 12px;
+  }
+
+  .totals-panel {
+    padding: 10px 14px;
+    margin-bottom: 12px;
+  }
+
+  .totals-cell + .totals-cell {
+    margin-left: 12px;
+    padding-left: 12px;
+  }
+
+  .totals-amount {
+    font-size: 18px;
   }
 
   .filter-grid {
@@ -627,6 +709,17 @@ onBeforeUnmount(() => {
 
   .inline-note .el-button {
     padding-left: 0;
+  }
+}
+
+@media (max-width: 400px) {
+  .totals-cell + .totals-cell {
+    margin-left: 9px;
+    padding-left: 9px;
+  }
+
+  .totals-amount {
+    font-size: 16px;
   }
 }
 </style>

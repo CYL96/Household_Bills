@@ -182,6 +182,13 @@ type TransactionFilters struct {
 	Query      string
 }
 
+// TransactionTotals holds the signed-in household's income and expense sums
+// over the same filters used by ListTransactions. Transfers never contribute.
+type TransactionTotals struct {
+	IncomeCents  int64
+	ExpenseCents int64
+}
+
 type CategoryTotal struct {
 	Category    string
 	AmountCents int64
