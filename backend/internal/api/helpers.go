@@ -23,6 +23,7 @@ const maxRequestBodyBytes = 1 << 20
 var (
 	errMissingMoney = errors.New("未提供金额")
 	monthPattern    = regexp.MustCompile(`^[0-9]{4}-(0[1-9]|1[0-2])$`)
+	dayPattern      = regexp.MustCompile(`^[0-9]{4}-[0-9]{2}-[0-9]{2}$`)
 	datePattern     = regexp.MustCompile(`^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}$`)
 )
 
@@ -117,6 +118,55 @@ func monthRange(value string) (start, end string, ok bool) {
 	first := time.Date(year, time.Month(month), 1, 0, 0, 0, 0, time.UTC)
 	next := first.AddDate(0, 1, 0)
 	return first.Format("2006-01-02"), next.Format("2006-01-02"), true
+}
+
+// parseDay validates a strict YYYY-MM-DD calendar date and returns it at UTC
+// midnight. Years before 1 and impossible dates such as 2027-02-29 are
+// rejected instead of being normalized by time.Date.
+func parseDay(value string) (time.Time, bool) {
+	if !dayPattern.MatchString(value) {
+		return time.Time{}, false
+	}
+	year, err := strconv.Atoi(value[0:4])
+	if err != nil || year < 1 {
+		return time.Time{}, false
+	}
+	month, err := strconv.Atoi(value[5:7])
+	if err != nil {
+		return time.Time{}, false
+	}
+	day, err := strconv.Atoi(value[8:10])
+	if err != nil {
+		return time.Time{}, false
+	}
+	parsed := time.Date(year, time.Month(month), day, 0, 0, 0, 0, time.UTC)
+	if parsed.Year() != year || int(parsed.Month()) != month || parsed.Day() != day {
+		return time.Time{}, false
+	}
+	return parsed, true
+}
+
+// dayRange converts an inclusive start/end pair into the half-open
+// [start, end+1day) range consumed by TransactionFilters.MonthStart/MonthEnd.
+// Invalid endpoints are reported per query field so the handler can abort with
+// a field array response.
+func dayRange(startValue, endValue string) (start, end string, fields map[string][]string) {
+	startDay, startOK := parseDay(startValue)
+	endDay, endOK := parseDay(endValue)
+	if !startOK || !endOK {
+		fields = make(map[string][]string, 2)
+		if !startOK {
+			fields["start"] = []string{"开始日期格式应为 YYYY-MM-DD，且必须是有效日期。"}
+		}
+		if !endOK {
+			fields["end"] = []string{"结束日期格式应为 YYYY-MM-DD，且必须是有效日期。"}
+		}
+		return "", "", fields
+	}
+	if endDay.Before(startDay) {
+		return "", "", map[string][]string{"end": {"结束日期不能早于开始日期。"}}
+	}
+	return startDay.Format("2006-01-02"), endDay.AddDate(0, 0, 1).Format("2006-01-02"), nil
 }
 
 func normalizeDate(value string) (string, bool) {

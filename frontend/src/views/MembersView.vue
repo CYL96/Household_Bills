@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { ElMessage } from 'element-plus'
 import {
   Delete,
   Edit,
@@ -16,6 +16,7 @@ import UserProfileDialog from '../components/UserProfileDialog.vue'
 import { getErrorMessage } from '../api/client'
 import type { User } from '../api/types'
 import { deleteUser } from '../api/users'
+import { confirmWithBack } from '../composables/confirmWithBack'
 import {
   addAuthMember,
   authState,
@@ -82,18 +83,17 @@ function openEdit(member: User): void {
 async function handleDelete(member: User): Promise<void> {
   if (actionDisabled.value || !canDelete(member)) return
   deletingId.value = member.id
-  try {
-    await ElMessageBox.confirm(
-      `删除“${displayName(member)}”后，该成员的所有登录会话会立即失效。其名下账户、账户归属、余额和历史流水均会保留，账户归属可在账户编辑中调整。`,
-      '删除成员',
-      {
-        confirmButtonText: '删除成员',
-        cancelButtonText: '取消',
-        type: 'warning',
-        confirmButtonClass: 'el-button--danger',
-      },
-    )
-  } catch {
+  const confirmed = await confirmWithBack(
+    `删除“${displayName(member)}”后，该成员的所有登录会话会立即失效。其名下账户、账户归属、余额和历史流水均会保留，账户归属可在账户编辑中调整。`,
+    '删除成员',
+    {
+      confirmButtonText: '删除成员',
+      cancelButtonText: '取消',
+      type: 'warning',
+      confirmButtonClass: 'el-button--danger',
+    },
+  )
+  if (!confirmed) {
     deletingId.value = null
     return
   }

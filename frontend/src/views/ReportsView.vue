@@ -10,14 +10,19 @@ import {
   WarningFilled,
 } from '@element-plus/icons-vue'
 import BaseChart from '../components/BaseChart.vue'
+import { useBackLayer } from '../composables/backNavigation'
 import { useMediaQuery } from '../composables/useMediaQuery'
 import EmptyState from '../components/EmptyState.vue'
 import TransactionList from '../components/TransactionList.vue'
 import { listAccounts } from '../api/accounts'
 import { getErrorMessage } from '../api/client'
 import { listTransactions } from '../api/transactions'
-import type { Account, Transaction } from '../api/types'
-import { authState } from '../stores/auth'
+import type {
+  Account,
+  Transaction,
+  TransactionFilters,
+} from '../api/types'
+import { authState, familyMembers } from '../stores/auth'
 import {
   categoryState,
   ensureCategories,
@@ -32,27 +37,99 @@ import {
 } from '../utils/reportStatistics'
 import {
   currentMonth,
+  formatDateLabel,
   formatMonthLabel,
   formatMoney,
+  localDayString,
+  monthEndDate,
   toNumber,
 } from '../utils/format'
+import { displayName } from '../utils/user'
 
 type ReportKind = 'expense' | 'income'
 type CategoryMode = 'major' | 'minor'
+type PeriodMode = 'month' | 'year' | 'range'
 
 const KIND_OPTIONS: ReadonlyArray<{ value: ReportKind; label: string }> = [
   { value: 'expense', label: '支出' },
   { value: 'income', label: '收入' },
 ]
 
-const month = ref(currentMonth())
+const PERIOD_OPTIONS: ReadonlyArray<{ value: PeriodMode; label: string }> = [
+  { value: 'month', label: '按月' },
+  { value: 'year', label: '按年' },
+  { value: 'range', label: '时间段' },
+]
+
+const initialMonth = currentMonth()
+const periodMode = ref<PeriodMode>('month')
+const month = ref(initialMonth)
+const year = ref(initialMonth.slice(0, 4))
+const rangeStart = ref(`${initialMonth}-01`)
+const rangeEnd = ref(monthEndDate(initialMonth))
+const accountFilter = ref<number | ''>('')
+const ownerFilter = ref<number | ''>('')
+
+/** Element Plus popper instances, closed through their public expose API. */
+interface PickerHandle {
+  handleClose: () => void
+}
+
+interface SelectHandle {
+  blur: () => void
+}
+
+const monthPickerRef = ref<PickerHandle | null>(null)
+const yearPickerRef = ref<PickerHandle | null>(null)
+const rangeStartPickerRef = ref<PickerHandle | null>(null)
+const rangeEndPickerRef = ref<PickerHandle | null>(null)
+const accountFilterRef = ref<SelectHandle | null>(null)
+const ownerFilterRef = ref<SelectHandle | null>(null)
+
+const monthPanelOpen = ref(false)
+const yearPanelOpen = ref(false)
+const rangeStartPanelOpen = ref(false)
+const rangeEndPanelOpen = ref(false)
+const accountFilterOpen = ref(false)
+const ownerFilterOpen = ref(false)
+
+function handleMonthPanelVisible(visible: boolean): void {
+  monthPanelOpen.value = visible
+}
+
+function handleYearPanelVisible(visible: boolean): void {
+  yearPanelOpen.value = visible
+}
+
+function handleRangeStartPanelVisible(visible: boolean): void {
+  rangeStartPanelOpen.value = visible
+}
+
+function handleRangeEndPanelVisible(visible: boolean): void {
+  rangeEndPanelOpen.value = visible
+}
+
+function handleAccountFilterVisible(visible: boolean): void {
+  accountFilterOpen.value = visible
+}
+
+function handleOwnerFilterVisible(visible: boolean): void {
+  ownerFilterOpen.value = visible
+}
+
 const kind = ref<ReportKind>('expense')
 const categoryMode = ref<CategoryMode>('major')
 const isMobile = useMediaQuery('(max-width: 760px)')
 const isCompact = useMediaQuery('(max-width: 430px)')
 const isNarrow = useMediaQuery('(max-width: 360px)')
 
-const transactions = ref<Transaction[]>([])
+const loadedTransactions = ref<Transaction[]>([])
+const transactions = computed<Transaction[]>(() => {
+  if (typeof ownerFilter.value !== 'number') return loadedTransactions.value
+  return loadedTransactions.value.filter(
+    (transaction) => transaction.owner === ownerFilter.value,
+  )
+})
 const loaded = ref(false)
 const loading = ref(true)
 const loadError = ref('')
@@ -61,7 +138,20 @@ const accounts = ref<Account[]>([])
 const accountsLoading = ref(true)
 const accountsError = ref('')
 
-const monthTotals = computed(() => sumReportAmounts(transactions.value))
+/**
+ * Query for the selected period. Month mode keeps `month`; year and custom
+ * range modes both load one date-range request (a year is never split into
+ * twelve month requests).
+ */
+const periodQuery = computed<TransactionFilters>(() => {
+  if (periodMode.value === 'month') return { month: month.value }
+  if (periodMode.value === 'year') {
+    return { start: `${year.value}-01-01`, end: `${year.value}-12-31` }
+  }
+  return { start: rangeStart.value, end: rangeEnd.value }
+})
+
+const periodTotals = computed(() => sumReportAmounts(transactions.value))
 
 /**
  * Editing writes back an account, so it stays unavailable until the account
@@ -80,9 +170,31 @@ const selectedChildKey = ref<string | null>(null)
 let loadSequence = 0
 let accountsSequence = 0
 
-const monthLabel = computed(() => formatMonthLabel(month.value))
+const periodLabel = computed(() => {
+  if (periodMode.value === 'month') return formatMonthLabel(month.value)
+  if (periodMode.value === 'year') return `${year.value}年`
+  return `${formatDateLabel(rangeStart.value)} 至 ${formatDateLabel(rangeEnd.value)}`
+})
+
+/**
+ * The custom range keeps start ≤ end in local civil days, so the two single
+ * day pickers can never produce an invalid or half-finished query.
+ */
+function isStartDateDisabled(date: Date): boolean {
+  return localDayString(date) > rangeEnd.value
+}
+
+function isEndDateDisabled(date: Date): boolean {
+  return localDayString(date) < rangeStart.value
+}
+
 const kindLabel = computed(() =>
   kind.value === 'expense' ? '支出' : '收入',
+)
+const emptyTitle = computed(() =>
+  accountFilter.value === '' && ownerFilter.value === ''
+    ? `${periodLabel.value}暂无${kindLabel.value}记录`
+    : `${periodLabel.value}暂无符合条件的${kindLabel.value}记录`,
 )
 
 /**
@@ -212,14 +324,26 @@ const chartLevelLabel = computed(() => {
   return effectiveMode.value === 'minor' ? '小类' : '大类'
 })
 
+const chartTotalLabel = computed(() =>
+  level.value === 'children'
+    ? `${selectedParent.value?.name ?? ''}${kindLabel.value}总计`
+    : `${kindLabel.value}${chartLevelLabel.value}总计`,
+)
+
+const chartTotalAmount = computed(() => {
+  if (level.value === 'children') return selectedParent.value?.amount ?? '0.00'
+  const current = effectiveMode.value === 'minor' ? minorReport.value : report.value
+  return current?.amount ?? '0.00'
+})
+
 const chartAriaLabel = computed(() => {
   if (chartRows.value.length === 0) {
-    return `${monthLabel.value}暂无可展示的${kindLabel.value}分类`
+    return `${periodLabel.value}暂无可展示的${kindLabel.value}分类`
   }
   const names = chartRows.value
     .map((row) => `${row.name} ${percentageLabel(row.percentage)} ${formatMoney(row.amount)}`)
     .join('、')
-  return `${monthLabel.value}${kindLabel.value}${chartLevelLabel.value}环形图，共 ${chartRows.value.length} 个分类：${names}`
+  return `${periodLabel.value}${kindLabel.value}${chartLevelLabel.value}环形图，共 ${chartRows.value.length} 个分类：${names}`
 })
 
 /**
@@ -496,6 +620,58 @@ function goBack(): void {
   resetDrilldown()
 }
 
+// 报表下钻（大类 → 二级分类 → 明细，或小类视图）先于页面后退逐级返回。
+useBackLayer(
+  () => level.value !== 'root' || effectiveMode.value === 'minor',
+  () => {
+    if (level.value !== 'root') goBack()
+    else backToMajorCategories()
+  },
+)
+
+// 时间与筛选面板覆盖在报表之上：返回先收起最内层面板，
+// 再次返回才执行报表下钻或页面后退。
+useBackLayer(
+  () =>
+    (monthPanelOpen.value && monthPickerRef.value !== null) ||
+    (yearPanelOpen.value && yearPickerRef.value !== null) ||
+    (rangeStartPanelOpen.value && rangeStartPickerRef.value !== null) ||
+    (rangeEndPanelOpen.value && rangeEndPickerRef.value !== null),
+  () => {
+    if (monthPanelOpen.value) monthPickerRef.value?.handleClose()
+    else if (yearPanelOpen.value) yearPickerRef.value?.handleClose()
+    else if (rangeStartPanelOpen.value) rangeStartPickerRef.value?.handleClose()
+    else if (rangeEndPanelOpen.value) rangeEndPickerRef.value?.handleClose()
+  },
+)
+
+useBackLayer(
+  () => accountFilterOpen.value && accountFilterRef.value !== null,
+  () => {
+    accountFilterRef.value?.blur()
+  },
+)
+
+useBackLayer(
+  () => ownerFilterOpen.value && ownerFilterRef.value !== null,
+  () => {
+    ownerFilterRef.value?.blur()
+  },
+)
+
+// 模式/层级切换会卸载对应面板；同步清掉可见状态，避免残留返回层。
+watch(periodMode, () => {
+  monthPanelOpen.value = false
+  yearPanelOpen.value = false
+  rangeStartPanelOpen.value = false
+  rangeEndPanelOpen.value = false
+})
+
+watch(level, () => {
+  accountFilterOpen.value = false
+  ownerFilterOpen.value = false
+})
+
 function openMinorRow(row: ReportCategory): void {
   const transactionId = row.transactions[0]?.id
   if (transactionId === undefined) return
@@ -554,14 +730,20 @@ async function load(quiet = false): Promise<void> {
   }
   loadError.value = ''
   try {
-    const result = await listTransactions({ month: month.value })
+    const result = await listTransactions({
+      ...periodQuery.value,
+      account:
+        typeof accountFilter.value === 'number'
+          ? accountFilter.value
+          : undefined,
+    })
     if (sequence !== loadSequence) return
-    transactions.value = result
+    loadedTransactions.value = result
     loaded.value = true
   } catch (error) {
     if (sequence !== loadSequence) return
     loadError.value = getErrorMessage(error)
-    if (!loaded.value) transactions.value = []
+    if (!loaded.value) loadedTransactions.value = []
   } finally {
     if (sequence === loadSequence) loading.value = false
   }
@@ -600,12 +782,12 @@ onMounted(() => {
   if (canvas && !chartWidth.value) chartWidth.value = canvas.clientWidth
 })
 
-watch(month, () => {
+watch([periodQuery, accountFilter], () => {
   resetDrilldown()
   void load()
 })
 
-watch(kind, () => {
+watch([kind, ownerFilter], () => {
   resetDrilldown()
 })
 
@@ -653,25 +835,130 @@ watch(rows, () => {
           >
             <span>{{ option.label }}</span>
             <span class="kind-toggle__amount money-number">
-              {{ loaded ? formatMoney(monthTotals[option.value]) : '—' }}
+              {{ loaded ? formatMoney(periodTotals[option.value]) : '—' }}
             </span>
           </button>
         </div>
-        <el-date-picker
-          v-model="month"
-          type="month"
-          value-format="YYYY-MM"
-          format="YYYY年MM月"
-          placeholder="选择月份"
-          :clearable="false"
-          class="month-picker"
-          aria-label="选择报表月份"
-        />
+        <div class="period-bar">
+          <div class="period-mode" role="group" aria-label="选择统计时间模式">
+            <button
+              v-for="option in PERIOD_OPTIONS"
+              :key="option.value"
+              type="button"
+              class="period-mode__button"
+              :class="{ 'is-active': periodMode === option.value }"
+              :aria-pressed="periodMode === option.value"
+              @click="periodMode = option.value"
+            >
+              {{ option.label }}
+            </button>
+          </div>
+          <div class="period-pickers">
+            <el-date-picker
+              v-if="periodMode === 'month'"
+              ref="monthPickerRef"
+              v-model="month"
+              type="month"
+              value-format="YYYY-MM"
+              format="YYYY年MM月"
+              placeholder="选择月份"
+              :clearable="false"
+              class="period-picker"
+              :editable="false"
+              popper-class="report-period-popper"
+              aria-label="选择报表月份"
+              @visible-change="handleMonthPanelVisible"
+            />
+            <el-date-picker
+              v-else-if="periodMode === 'year'"
+              ref="yearPickerRef"
+              v-model="year"
+              type="year"
+              value-format="YYYY"
+              format="YYYY年"
+              placeholder="选择年份"
+              :clearable="false"
+              class="period-picker period-picker--year"
+              :editable="false"
+              popper-class="report-period-popper"
+              aria-label="选择报表年份"
+              @visible-change="handleYearPanelVisible"
+            />
+            <div v-else class="period-range">
+              <el-date-picker
+                ref="rangeStartPickerRef"
+                v-model="rangeStart"
+                type="date"
+                value-format="YYYY-MM-DD"
+                format="YYYY-MM-DD"
+                placeholder="开始日期"
+                :clearable="false"
+                :editable="false"
+                :disabled-date="isStartDateDisabled"
+                class="period-range__picker"
+                popper-class="report-period-popper"
+                aria-label="选择开始日期"
+                @visible-change="handleRangeStartPanelVisible"
+              />
+              <span class="period-range__sep" aria-hidden="true">至</span>
+              <el-date-picker
+                ref="rangeEndPickerRef"
+                v-model="rangeEnd"
+                type="date"
+                value-format="YYYY-MM-DD"
+                format="YYYY-MM-DD"
+                placeholder="结束日期"
+                :clearable="false"
+                :editable="false"
+                :disabled-date="isEndDateDisabled"
+                class="period-range__picker"
+                popper-class="report-period-popper"
+                aria-label="选择结束日期"
+                @visible-change="handleRangeEndPanelVisible"
+              />
+            </div>
+          </div>
+        </div>
+        <div v-if="level === 'root'" class="filter-pair">
+          <el-select
+            ref="accountFilterRef"
+            v-model="accountFilter"
+            placeholder="全部账户"
+            clearable
+            :loading="accountsLoading"
+            class="account-picker"
+            aria-label="按资金账户筛选"
+            @visible-change="handleAccountFilterVisible"
+          >
+            <el-option
+              v-for="account in accounts"
+              :key="account.id"
+              :label="account.name"
+              :value="account.id"
+            />
+          </el-select>
+          <el-select
+            ref="ownerFilterRef"
+            v-model="ownerFilter"
+            placeholder="全部用户"
+            clearable
+            class="owner-picker"
+            aria-label="按记账归属用户筛选"
+            @visible-change="handleOwnerFilterVisible"
+          >
+            <el-option
+              v-for="member in familyMembers"
+              :key="member.id"
+              :label="displayName(member)"
+              :value="member.id"
+            />
+          </el-select>
+        </div>
       </div>
     </div>
 
     <div v-if="loading" class="report-skeleton" aria-busy="true" aria-live="polite">
-      <span class="sr-only">正在加载{{ monthLabel }}{{ kindLabel }}报表</span>
+      <span class="sr-only">正在加载{{ periodLabel }}{{ kindLabel }}报表</span>
       <div class="surface-card skeleton-block skeleton-block--chart">
         <el-skeleton animated :rows="7" />
       </div>
@@ -756,8 +1043,8 @@ watch(rows, () => {
         class="surface-card report-empty"
       >
         <EmptyState
-          :title="`${monthLabel}暂无${kindLabel}记录`"
-          :description="`所选月份还没有${kindLabel}流水。账户转账不计入报表；记录一笔${kindLabel}后，分类统计会显示在这里。`"
+          :title="emptyTitle"
+          :description="`当前筛选条件下还没有${kindLabel}流水。账户转账不计入报表；记录一笔${kindLabel}后，分类统计会显示在这里。`"
           :icon="PieChart"
         >
           <template #actions>
@@ -780,18 +1067,12 @@ watch(rows, () => {
 
         <div v-if="level === 'detail'" class="surface-card report-detail">
           <header class="report-detail__head">
-            <div>
-              <p class="page-eyebrow">
-                {{ kind === 'expense' ? '支出明细' : '收入明细' }}
-              </p>
-              <h3>{{ activeCategory?.name }}</h3>
-              <p class="report-detail__subtitle">
-                {{ monthLabel }} · {{ activeCategory?.count ?? 0 }} 笔 · 合计
-                <span class="money-number">
-                  {{ formatMoney(activeCategory?.amount ?? '0.00') }}
-                </span>
-              </p>
-            </div>
+            <p class="report-detail__subtitle">
+              {{ activeCategory?.count ?? 0 }} 笔 · 合计
+              <span class="money-number">
+                {{ formatMoney(activeCategory?.amount ?? '0.00') }}
+              </span>
+            </p>
           </header>
 
           <div
@@ -836,6 +1117,12 @@ watch(rows, () => {
 
         <div v-else class="report-grid">
           <section class="surface-card report-chart" aria-label="分类占比环形图">
+            <header class="report-chart__total">
+              <span class="report-chart__total-label">{{ chartTotalLabel }}</span>
+              <strong class="report-chart__total-amount money-number">
+                {{ formatMoney(chartTotalAmount) }}
+              </strong>
+            </header>
             <div ref="chartCanvasEl" class="report-chart__canvas">
               <BaseChart
                 :option="chartOption"
@@ -923,10 +1210,6 @@ watch(rows, () => {
                 </button>
               </li>
             </ul>
-
-            <p class="report-list__hint">
-              金额按分精确聚合，占比四舍五入到两位小数；转账不计入{{ kindLabel }}。
-            </p>
           </section>
         </div>
       </div>
@@ -939,8 +1222,117 @@ watch(rows, () => {
   min-width: 0;
 }
 
-.month-picker {
+.period-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.period-mode {
+  display: inline-flex;
+  gap: 4px;
+  padding: 3px;
+  background: var(--hb-bg);
+  border: 1px solid var(--hb-line);
+  border-radius: 999px;
+}
+
+.period-mode__button {
+  padding: 5px 11px;
+  color: var(--hb-ink-soft);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  background: transparent;
+  border: 0;
+  border-radius: 999px;
+  cursor: pointer;
+  appearance: none;
+  transition:
+    color 0.16s ease,
+    background-color 0.16s ease,
+    box-shadow 0.16s ease;
+}
+
+.period-mode__button:hover {
+  color: var(--hb-ink);
+}
+
+.period-mode__button.is-active {
+  color: var(--hb-teal-dark);
+  background: var(--hb-surface);
+  box-shadow: var(--hb-shadow-sm);
+}
+
+.period-mode__button:focus-visible {
+  outline: 2px solid var(--hb-teal);
+  outline-offset: 1px;
+}
+
+.period-pickers {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.heading-actions :deep(.period-picker) {
   width: 152px;
+}
+
+.heading-actions :deep(.period-picker--year) {
+  width: 120px;
+}
+
+.heading-actions :deep(.period-range__picker) {
+  width: 138px;
+}
+
+.period-range {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.period-range__sep {
+  flex: 0 0 auto;
+  color: var(--hb-ink-faint);
+  font-size: 12px;
+}
+
+/*
+ * The picker panel is teleported to <body>, so it cannot be styled from this
+ * scoped block. The shared popper class confines the override to the report
+ * period pickers: Element's fixed 322px panel and 292px inner content are
+ * wider than a 320px screen, so the panel is clamped to the viewport and the
+ * existing date grid is allowed to reflow inside it.
+ */
+:global(.report-period-popper .el-picker-panel) {
+  max-width: calc(100vw - 24px);
+}
+
+:global(.report-period-popper .el-picker-panel .el-picker-panel__content) {
+  width: auto;
+}
+
+.heading-actions :deep(.account-picker) {
+  width: 180px;
+}
+
+.heading-actions :deep(.owner-picker) {
+  width: 160px;
+}
+
+.filter-pair {
+  display: flex;
+  flex-wrap: nowrap;
+  gap: 10px;
+  min-width: 0;
 }
 
 .kind-toggle {
@@ -1058,6 +1450,31 @@ watch(rows, () => {
 .report-chart {
   min-width: 0;
   padding: 6px 8px 2px;
+}
+
+.report-chart__total {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 6px 16px;
+  padding: 14px 16px 0;
+}
+
+.report-chart__total-label {
+  color: var(--hb-ink-soft);
+  font-size: 13px;
+}
+
+.report-chart__total-amount {
+  min-width: 0;
+  margin-left: auto;
+  color: var(--hb-ink);
+  font-size: 20px;
+  font-weight: 700;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+  text-align: right;
 }
 
 .report-chart__canvas {
@@ -1245,41 +1662,16 @@ watch(rows, () => {
   color: var(--hb-ink-faint);
 }
 
-.report-list__hint {
-  margin-top: 12px;
-  padding-top: 12px;
-  color: var(--hb-ink-faint);
-  font-size: 11px;
-  line-height: 1.6;
-  border-top: 1px dashed var(--hb-line);
-}
-
 .report-detail {
   min-width: 0;
   padding: 20px 22px 18px;
 }
 
 .report-detail__head {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 12px;
   margin-bottom: 16px;
 }
 
-.report-detail__head .page-eyebrow {
-  margin-bottom: 4px;
-  font-size: 10px;
-}
-
-.report-detail__head h3 {
-  color: var(--hb-ink);
-  font-size: 19px;
-}
-
 .report-detail__subtitle {
-  margin-top: 5px;
   color: var(--hb-ink-soft);
   font-size: 13px;
 }
@@ -1351,8 +1743,49 @@ watch(rows, () => {
 }
 
 @media (max-width: 640px) {
-  .month-picker {
+  .heading-actions :deep(.period-picker),
+  .heading-actions :deep(.period-picker--year) {
     width: 100%;
+  }
+
+  .period-bar {
+    flex-direction: column;
+    align-items: stretch;
+    width: 100%;
+  }
+
+  .period-mode {
+    width: 100%;
+  }
+
+  .period-mode__button {
+    flex: 1 1 0;
+  }
+
+  .period-pickers {
+    display: block;
+    width: 100%;
+  }
+
+  .period-range {
+    width: 100%;
+  }
+
+  .period-range :deep(.period-range__picker) {
+    flex: 1 1 0;
+    width: auto;
+    min-width: 0;
+  }
+
+  .filter-pair {
+    width: 100%;
+  }
+
+  .filter-pair :deep(.account-picker),
+  .filter-pair :deep(.owner-picker) {
+    flex: 1 1 0;
+    width: auto;
+    min-width: 0;
   }
 
   .kind-toggle {
@@ -1361,10 +1794,6 @@ watch(rows, () => {
 
   .kind-toggle__button {
     flex: 1;
-  }
-
-  .report-detail__head h3 {
-    font-size: 17px;
   }
 
   .skeleton-block {

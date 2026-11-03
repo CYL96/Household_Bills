@@ -19,6 +19,30 @@ export function currentMonth(): string {
   return `${now.getFullYear()}-${pad2(now.getMonth() + 1)}`
 }
 
+/** Local civil day in YYYY-MM-DD, never derived through UTC. */
+export function localDayString(date: Date): string {
+  return `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())}`
+}
+
+/** Last calendar day of a YYYY-MM month, computed without UTC conversion. */
+export function monthEndDate(month: string): string {
+  const match = /^(\d{4})-(\d{2})$/.exec(month)
+  if (!match) return month
+  const year = Number(match[1])
+  const monthIndex = Number(match[2])
+  if (monthIndex < 1 || monthIndex > 12) return month
+  const leap = (year % 4 === 0 && year % 100 !== 0) || year % 400 === 0
+  const days =
+    monthIndex === 2
+      ? leap
+        ? 29
+        : 28
+      : [4, 6, 9, 11].includes(monthIndex)
+        ? 30
+        : 31
+  return `${match[1]}-${match[2]}-${pad2(days)}`
+}
+
 /**
  * Local civil date-time in YYYY-MM-DDTHH:mm:ss, never derived through UTC.
  * Matches the transaction `date` API field exactly (no timezone offset).
@@ -63,6 +87,13 @@ export function formatMonthLabel(month: string): string {
   const match = /^(\d{4})-(\d{2})$/.exec(month)
   if (!match) return month
   return `${match[1]}年${Number(match[2])}月`
+}
+
+/** Renders a YYYY-MM-DD calendar day as YYYY年M月D日. */
+export function formatDateLabel(date: string): string {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(date)
+  if (!match) return date
+  return `${match[1]}年${Number(match[2])}月${Number(match[3])}日`
 }
 
 /**

@@ -190,6 +190,7 @@ public class MainActivity extends Activity {
     private AlertDialog originConfirmDialog;
 
     private Object backCallback;
+    private boolean backDispatchPending;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -1315,6 +1316,7 @@ public class MainActivity extends Activity {
      */
     private void recreateWebViewForCleanup(final int generation) {
         webViewGeneration++;
+        backDispatchPending = false;
         currentMainFrameUrl = null;
         mainFrameLoading = false;
         progressBar.setVisibility(View.GONE);
@@ -2176,6 +2178,18 @@ public class MainActivity extends Activity {
     }
 
     private void handleBack() {
+        if (activeJsDialog != null) {
+            cancelActiveJsDialog();
+            return;
+        }
+        if (originConfirmDialog != null && originConfirmDialog.isShowing()) {
+            originConfirmDialog.cancel();
+            return;
+        }
+        if (updateDialog != null && updateDialog.isShowing()) {
+            updateDialog.cancel();
+            return;
+        }
         if (state == STATE_SETTINGS) {
             if (switchingOrigin) {
                 return;
@@ -2187,11 +2201,44 @@ public class MainActivity extends Activity {
             dismissError();
             return;
         }
-        if (webView != null && webView.canGoBack()) {
-            webView.goBack();
+        dispatchWebBack();
+    }
+
+    private void dispatchWebBack() {
+        final WebView view = webView;
+        if (view == null) {
+            finish();
             return;
         }
-        finish();
+        if (backDispatchPending) {
+            return;
+        }
+        final int generation = webViewGeneration;
+        backDispatchPending = true;
+        // Ask the SPA to close its top layer or navigate before using WebView history.
+        // No JavaScript-to-native interface is exposed.
+        view.evaluateJavascript(
+                "(function(){return typeof window.__hbBack==='function'"
+                        + "?window.__hbBack():'route'})()",
+                result -> {
+                    if (view != webView || generation != webViewGeneration) {
+                        return;
+                    }
+                    backDispatchPending = false;
+                    if (state != STATE_WEB || isFinishing() || isDestroyed()) {
+                        return;
+                    }
+                    if ("\"handled\"".equals(result)) {
+                        return;
+                    }
+                    if ("\"exit\"".equals(result)) {
+                        finish();
+                    } else if (view.canGoBack()) {
+                        view.goBack();
+                    } else {
+                        finish();
+                    }
+                });
     }
 
     // ------------------------------------------------------------------
@@ -2257,6 +2304,7 @@ public class MainActivity extends Activity {
     protected void onDestroy() {
         switchGeneration++;
         webViewGeneration++;
+        backDispatchPending = false;
         WebView oldWebView = webView;
         webView = null;
         currentMainFrameUrl = null;

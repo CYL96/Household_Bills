@@ -13,6 +13,7 @@ import {
 } from '@element-plus/icons-vue'
 import AppNav from '../components/AppNav.vue'
 import AppSettingsButton from '../components/AppSettingsButton.vue'
+import { useBackLayer } from '../composables/backNavigation'
 import { getErrorMessage } from '../api/client'
 import UserAvatar from '../components/UserAvatar.vue'
 import UserProfileDialog from '../components/UserProfileDialog.vue'
@@ -25,6 +26,8 @@ const router = useRouter()
 const navOpen = ref(false)
 const profileOpen = ref(false)
 const loggingOut = ref(false)
+const userMenuOpen = ref(false)
+const userDropdownRef = ref<{ handleClose: () => void } | null>(null)
 
 const pageTitle = computed(() =>
   typeof route.meta.title === 'string' ? route.meta.title : '家庭账本',
@@ -37,6 +40,8 @@ const transactionsActive = computed(
 const statisticsActive = computed(
   () => route.path === '/statistics' || route.path.startsWith('/statistics/'),
 )
+const reportsActive = computed(() => route.name === 'reports')
+const calendarActive = computed(() => route.name === 'calendar')
 
 const householdName = computed(() => authState.household?.name ?? '我的家庭')
 
@@ -48,6 +53,8 @@ watch(
   () => route.fullPath,
   () => {
     navOpen.value = false
+    if (userMenuOpen.value) userDropdownRef.value?.handleClose()
+    userMenuOpen.value = false
   },
 )
 
@@ -77,6 +84,26 @@ function openProfile(): void {
   profileOpen.value = true
 }
 
+// 系统返回键先关闭导航抽屉，不改变当前页面。
+useBackLayer(
+  () => navOpen.value,
+  () => {
+    navOpen.value = false
+  },
+)
+
+// 右上账户菜单同样覆盖页面：返回先收起菜单，再次返回才离开当前页面。
+useBackLayer(
+  () => userMenuOpen.value,
+  () => {
+    userDropdownRef.value?.handleClose()
+  },
+)
+
+function handleUserMenuVisible(visible: boolean): void {
+  userMenuOpen.value = visible
+}
+
 function handleUserCommand(command: string | number | object): void {
   if (command === 'profile') openProfile()
   if (command === 'logout') void handleLogout()
@@ -102,11 +129,37 @@ function handleUserCommand(command: string | number | object): void {
 
         <div class="topbar__heading">
           <p class="topbar__eyebrow">{{ householdName }}</p>
-          <h1>{{ pageTitle }}</h1>
+          <template v-if="statisticsActive">
+            <h1 class="sr-only">{{ pageTitle }}</h1>
+            <nav class="view-tabs" aria-label="统计视图">
+              <router-link
+                to="/statistics/reports"
+                class="view-tab"
+                :class="{ 'is-active': reportsActive }"
+                :aria-current="reportsActive ? 'page' : undefined"
+              >
+                报表
+              </router-link>
+              <router-link
+                to="/statistics/calendar"
+                class="view-tab"
+                :class="{ 'is-active': calendarActive }"
+                :aria-current="calendarActive ? 'page' : undefined"
+              >
+                日历
+              </router-link>
+            </nav>
+          </template>
+          <h1 v-else class="topbar__title">{{ pageTitle }}</h1>
         </div>
 
         <div class="topbar__user">
-          <el-dropdown trigger="click" @command="handleUserCommand">
+          <el-dropdown
+            ref="userDropdownRef"
+            trigger="click"
+            @command="handleUserCommand"
+            @visible-change="handleUserMenuVisible"
+          >
             <button
               type="button"
               class="user-chip"
@@ -310,7 +363,7 @@ function handleUserCommand(command: string | number | object): void {
   white-space: nowrap;
 }
 
-.topbar__heading h1 {
+.topbar__title {
   margin-top: 1px;
   overflow: hidden;
   font-family: var(--hb-display);
@@ -319,6 +372,44 @@ function handleUserCommand(command: string | number | object): void {
   letter-spacing: 0.03em;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.view-tabs {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  max-width: 100%;
+  margin-top: 2px;
+  padding: 3px;
+  background: rgba(255, 253, 248, 0.9);
+  border: 1px solid var(--hb-line);
+  border-radius: 999px;
+}
+
+.view-tab {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 3px 18px;
+  color: var(--hb-ink-soft);
+  border-radius: 999px;
+  font-family: var(--hb-display);
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  line-height: 1.5;
+  white-space: nowrap;
+  transition: color 0.18s ease, background-color 0.18s ease;
+}
+
+.view-tab:hover {
+  color: var(--hb-teal-dark);
+  background: rgba(15, 118, 110, 0.06);
+}
+
+.view-tab.is-active {
+  color: var(--hb-teal-dark);
+  background: var(--hb-teal-soft);
 }
 
 .topbar__user {
@@ -485,8 +576,18 @@ function handleUserCommand(command: string | number | object): void {
     letter-spacing: 0.06em;
   }
 
-  .topbar__heading h1 {
+  .topbar__title {
     font-size: 18px;
+  }
+
+  .view-tabs {
+    padding: 2px;
+  }
+
+  .view-tab {
+    padding: 2px 12px;
+    font-size: 13px;
+    letter-spacing: 0.02em;
   }
 
   .user-chip {

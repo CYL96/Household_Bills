@@ -30,6 +30,7 @@ import type {
   TransactionPayload,
   User,
 } from '../api/types'
+import { useBackLayer } from '../composables/backNavigation'
 import { useMediaQuery } from '../composables/useMediaQuery'
 import { authState, familyMembers } from '../stores/auth'
 import {
@@ -115,6 +116,41 @@ const submitMode = ref<'save' | 'again' | null>(null)
 const errorMessage = ref('')
 const categorySettingsOpen = ref(false)
 const focusAmountAfterSave = ref(false)
+
+/** Element Plus popper instances, closed through their public expose API. */
+interface PanelHandle {
+  handleClose: () => void
+}
+
+interface SelectHandle {
+  blur: () => void
+}
+
+const datePickerRef = ref<PanelHandle | null>(null)
+const walletDropdownRef = ref<PanelHandle | null>(null)
+const ownerDropdownRef = ref<PanelHandle | null>(null)
+const transferSourceSelectRef = ref<SelectHandle | null>(null)
+const transferTargetSelectRef = ref<SelectHandle | null>(null)
+
+// Each popper is an inner back layer while it covers the entry dialog.
+const datePanelOpen = ref(false)
+const walletMenuOpen = ref(false)
+const ownerMenuOpen = ref(false)
+const transferSourceSelectOpen = ref(false)
+const transferTargetSelectOpen = ref(false)
+
+function resetSelectionPanels(): void {
+  if (datePanelOpen.value) datePickerRef.value?.handleClose()
+  if (walletMenuOpen.value) walletDropdownRef.value?.handleClose()
+  if (ownerMenuOpen.value) ownerDropdownRef.value?.handleClose()
+  if (transferSourceSelectOpen.value) transferSourceSelectRef.value?.blur()
+  if (transferTargetSelectOpen.value) transferTargetSelectRef.value?.blur()
+  datePanelOpen.value = false
+  walletMenuOpen.value = false
+  ownerMenuOpen.value = false
+  transferSourceSelectOpen.value = false
+  transferTargetSelectOpen.value = false
+}
 
 interface TransactionFormState {
   account: number | undefined
@@ -579,6 +615,7 @@ function resetForm(): void {
   errorMessage.value = ''
   categorySettingsOpen.value = false
   closeSubcategory()
+  resetSelectionPanels()
   focusAmountAfterSave.value = false
   form.transferAccount = undefined
   form.note = ''
@@ -670,6 +707,67 @@ function closeDialog(force = false): void {
   emit('update:modelValue', false)
 }
 
+// 记账弹窗本身是一层；子分类选择覆盖在它上面，返回时先收起子分类。
+useBackLayer(
+  () => props.modelValue,
+  () => closeDialog(),
+)
+
+useBackLayer(
+  () => subcategoryOpen.value,
+  () => {
+    if (!saving.value) closeSubcategory(true)
+  },
+)
+
+// 日期、资金账户、归属与转账账户选择面板同样位于记账弹窗内部：
+// 返回先收起最内层选择面板，再次返回才关闭记账弹窗，已填内容保持不变。
+useBackLayer(
+  () => props.modelValue && datePanelOpen.value && datePickerRef.value !== null,
+  () => {
+    if (saving.value) return
+    datePickerRef.value?.handleClose()
+  },
+)
+
+useBackLayer(
+  () => props.modelValue && walletMenuOpen.value && walletDropdownRef.value !== null,
+  () => {
+    if (inputDisabled.value) return
+    walletDropdownRef.value?.handleClose()
+  },
+)
+
+useBackLayer(
+  () => props.modelValue && ownerMenuOpen.value && ownerDropdownRef.value !== null,
+  () => {
+    if (ownerSelectionDisabled.value) return
+    ownerDropdownRef.value?.handleClose()
+  },
+)
+
+useBackLayer(
+  () =>
+    props.modelValue &&
+    transferSourceSelectOpen.value &&
+    transferSourceSelectRef.value !== null,
+  () => {
+    if (inputDisabled.value) return
+    transferSourceSelectRef.value?.blur()
+  },
+)
+
+useBackLayer(
+  () =>
+    props.modelValue &&
+    transferTargetSelectOpen.value &&
+    transferTargetSelectRef.value !== null,
+  () => {
+    if (inputDisabled.value) return
+    transferTargetSelectRef.value?.blur()
+  },
+)
+
 function goCreateAccount(): void {
   closeDialog()
   void router.push({ name: 'accounts', query: { new: '1' } })
@@ -687,6 +785,7 @@ function handleKindChange(value: unknown): void {
   errorMessage.value = ''
   categorySettingsOpen.value = false
   closeSubcategory()
+  resetSelectionPanels()
   if (next === 'transfer') {
     form.category = TRANSFER_CATEGORY
     ensureTransferAccounts()
@@ -1174,7 +1273,24 @@ function scrollSelectedWalletIntoView(): void {
 }
 
 function handleWalletMenuVisible(visible: boolean): void {
+  walletMenuOpen.value = visible
   if (!visible) scrollSelectedWalletIntoView()
+}
+
+function handleOwnerMenuVisible(visible: boolean): void {
+  ownerMenuOpen.value = visible
+}
+
+function handleDatePanelVisible(visible: boolean): void {
+  datePanelOpen.value = visible
+}
+
+function handleTransferSourceSelectVisible(visible: boolean): void {
+  transferSourceSelectOpen.value = visible
+}
+
+function handleTransferTargetSelectVisible(visible: boolean): void {
+  transferTargetSelectOpen.value = visible
 }
 
 function selectAccount(accountId: number): void {
@@ -1292,6 +1408,7 @@ watch(
     } else {
       categorySettingsOpen.value = false
       closeSubcategory()
+      resetSelectionPanels()
     }
   },
   { immediate: true },
@@ -1377,7 +1494,12 @@ onBeforeUnmount(() => {
       !saving &&
       !categorySettingsOpen &&
       !subcategoryOpen &&
-      !subcategoryParent
+      !subcategoryParent &&
+      !datePanelOpen &&
+      !walletMenuOpen &&
+      !ownerMenuOpen &&
+      !transferSourceSelectOpen &&
+      !transferTargetSelectOpen
     "
     :show-close="false"
   >
@@ -1458,6 +1580,7 @@ onBeforeUnmount(() => {
       >
         <div class="wallet-bar" role="group" aria-label="资金账户">
           <el-dropdown
+            ref="walletDropdownRef"
             trigger="click"
             placement="bottom-start"
             :disabled="inputDisabled"
@@ -1674,10 +1797,12 @@ onBeforeUnmount(() => {
             <div class="transfer-row">
               <el-form-item label="转出账户" prop="account" class="transfer-account">
                 <el-select
+                  ref="transferSourceSelectRef"
                   v-model="form.account"
                   placeholder="选择转出账户"
                   aria-label="转出账户"
                   @change="handleSourceAccountChange"
+                  @visible-change="handleTransferSourceSelectVisible"
                 >
                   <el-option
                     v-for="account in accounts"
@@ -1706,10 +1831,12 @@ onBeforeUnmount(() => {
                 class="transfer-account"
               >
                 <el-select
+                  ref="transferTargetSelectRef"
                   v-model="form.transferAccount"
                   placeholder="选择转入账户"
                   aria-label="转入账户"
                   :disabled="inputDisabled || accounts.length < 2"
+                  @visible-change="handleTransferTargetSelectVisible"
                 >
                   <el-option
                     v-for="account in accounts"
@@ -1744,11 +1871,13 @@ onBeforeUnmount(() => {
             />
 
             <el-dropdown
+              ref="ownerDropdownRef"
               trigger="click"
               placement="bottom-end"
               :disabled="ownerSelectionDisabled"
               popper-class="owner-menu"
               @command="handleOwnerCommand"
+              @visible-change="handleOwnerMenuVisible"
             >
               <button
                 type="button"
@@ -1799,6 +1928,7 @@ onBeforeUnmount(() => {
           <div class="dock-meta">
             <el-form-item label="记账时间" prop="date" class="dock-date">
               <el-date-picker
+                ref="datePickerRef"
                 v-model="form.date"
                 type="datetime"
                 value-format="YYYY-MM-DDTHH:mm:ss"
@@ -1806,7 +1936,9 @@ onBeforeUnmount(() => {
                 placeholder="选择记账时间"
                 :clearable="false"
                 :disabled="inputDisabled"
+                :editable="false"
                 aria-label="记账时间"
+                @visible-change="handleDatePanelVisible"
               />
             </el-form-item>
 

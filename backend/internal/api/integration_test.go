@@ -1944,3 +1944,120 @@ func TestTransactionCategoryFilter(t *testing.T) {
 		}
 	}
 }
+
+func TestTransactionDateRangeFilter(t *testing.T) {
+	env := newTestEnv(t)
+	admin := env.adminClient(t)
+
+	mainAccount := admin.object(t, http.MethodPost, "/api/accounts/",
+		map[string]any{"name": "日期主账户", "balance": "0.00"}, http.StatusCreated)
+	mainAccountID := jsonInt64(t, mainAccount["id"])
+	secondAccount := admin.object(t, http.MethodPost, "/api/accounts/",
+		map[string]any{"name": "日期次账户", "balance": "0.00"}, http.StatusCreated)
+	secondAccountID := jsonInt64(t, secondAccount["id"])
+
+	create := func(accountID int64, amount, date string) {
+		admin.object(t, http.MethodPost, "/api/transactions/", map[string]any{
+			"account": accountID, "kind": "expense", "amount": amount,
+			"category": "日期", "date": date,
+		}, http.StatusCreated)
+	}
+	create(mainAccountID, "1.00", "2027-12-30T23:59:59")
+	create(mainAccountID, "2.00", "2027-12-31T23:59:59")
+	create(mainAccountID, "3.00", "2028-01-01T00:00:00")
+	create(mainAccountID, "4.00", "2028-01-02T00:00:00")
+	create(secondAccountID, "5.00", "2028-01-01T12:00:00")
+	create(secondAccountID, "6.00", "2028-02-28T23:59:59")
+	create(secondAccountID, "7.00", "2028-02-29T12:00:00")
+
+	crossYear := admin.array(t, http.MethodGet,
+		"/api/transactions/?start=2027-12-31&end=2028-01-01", nil, http.StatusOK)
+	if len(crossYear) != 3 {
+		t.Fatalf("跨年范围应包含首尾当天共 3 条交易，实际 %d 条: %s",
+			len(crossYear), mustJSON(t, crossYear))
+	}
+	wantDates := map[string]bool{
+		"2027-12-31T23:59:59": true,
+		"2028-01-01T00:00:00": true,
+		"2028-01-01T12:00:00": true,
+	}
+	for _, transaction := range crossYear {
+		date := mustString(t, transaction["date"])
+		if !wantDates[date] {
+			t.Fatalf("跨年范围返回了范围外日期 %s: %s", date, mustJSON(t, crossYear))
+		}
+		delete(wantDates, date)
+	}
+	if len(wantDates) != 0 {
+		t.Fatalf("跨年范围缺少边界交易: %s", mustJSON(t, crossYear))
+	}
+
+	if got := len(admin.array(t, http.MethodGet,
+		"/api/transactions/?start=2028-01-01&end=2028-01-01", nil, http.StatusOK)); got != 2 {
+		t.Fatalf("单日范围应包含当天全部交易，实际 %d 条", got)
+	}
+
+	leapDay := admin.array(t, http.MethodGet,
+		"/api/transactions/?start=2028-02-29&end=2028-02-29", nil, http.StatusOK)
+	if len(leapDay) != 1 || mustString(t, leapDay[0]["date"]) != "2028-02-29T12:00:00" {
+		t.Fatalf("闰日范围应只返回闰日当天交易: %s", mustJSON(t, leapDay))
+	}
+
+	// The legacy month filter keeps its calendar-month semantics.
+	if got := len(admin.array(t, http.MethodGet,
+		"/api/transactions/?month=2028-01", nil, http.StatusOK)); got != 3 {
+		t.Fatalf("month 过滤应保持旧行为，实际 %d 条", got)
+	}
+
+	if got := len(admin.array(t, http.MethodGet,
+		fmt.Sprintf("/api/transactions/?start=2027-12-31&end=2028-01-01&account=%d", mainAccountID),
+		nil, http.StatusOK)); got != 2 {
+		t.Fatalf("日期范围应与账户过滤相交，实际 %d 条", got)
+	}
+	if got := len(admin.array(t, http.MethodGet,
+		fmt.Sprintf("/api/transactions/?start=2027-12-31&end=2028-01-01&account=%d", secondAccountID),
+		nil, http.StatusOK)); got != 1 {
+		t.Fatalf("日期范围应与其他账户过滤相交，实际 %d 条", got)
+	}
+
+	_, _ = env.seedUser(t, "日期隔离家庭", "bob", strongPassword, false)
+	bob := env.loginUser(t, "bob", strongPassword)
+	bobAccount := bob.object(t, http.MethodPost, "/api/accounts/",
+		map[string]any{"name": "乙日期账户", "balance": "0.00"}, http.StatusCreated)
+	bob.object(t, http.MethodPost, "/api/transactions/", map[string]any{
+		"account": jsonInt64(t, bobAccount["id"]), "kind": "expense", "amount": "8.00",
+		"category": "日期", "date": "2028-01-01T06:00:00",
+	}, http.StatusCreated)
+	if got := len(bob.array(t, http.MethodGet,
+		"/api/transactions/?start=2028-01-01&end=2028-01-01", nil, http.StatusOK)); got != 1 {
+		t.Fatalf("日期范围应保持家庭隔离，乙应只看到 1 条交易，实际 %d 条", got)
+	}
+	if got := len(admin.array(t, http.MethodGet,
+		"/api/transactions/?start=2028-01-01&end=2028-01-01", nil, http.StatusOK)); got != 2 {
+		t.Fatalf("日期范围不应返回其他家庭交易，实际 %d 条", got)
+	}
+
+	for _, invalidCase := range []struct {
+		name  string
+		path  string
+		field string
+	}{
+		{"无效日历日期", "/api/transactions/?start=2027-02-29&end=2027-03-01", "start"},
+		{"月份越界", "/api/transactions/?start=2027-13-01&end=2027-13-02", "start"},
+		{"零年", "/api/transactions/?start=0000-01-01&end=0000-01-02", "start"},
+		{"带时间", "/api/transactions/?start=2027-01-01T00:00:00&end=2027-01-02", "start"},
+		{"空端点", "/api/transactions/?start=&end=2028-01-01", "start"},
+		{"结束无效日期", "/api/transactions/?start=2028-04-01&end=2028-04-31", "end"},
+		{"缺少结束", "/api/transactions/?start=2027-01-01", "end"},
+		{"缺少开始", "/api/transactions/?end=2027-01-01", "start"},
+		{"结束早于开始", "/api/transactions/?start=2028-01-02&end=2028-01-01", "end"},
+		{"与month冲突", "/api/transactions/?month=2028-01&start=2028-01-01&end=2028-01-02", "month"},
+	} {
+		response := admin.do(http.MethodGet, invalidCase.path, nil)
+		response.expect(t, http.StatusBadRequest)
+		if _, exists := response.object(t)[invalidCase.field]; !exists {
+			t.Fatalf("%s 应返回 %s 字段错误: %s",
+				invalidCase.name, invalidCase.field, string(response.body))
+		}
+	}
+}

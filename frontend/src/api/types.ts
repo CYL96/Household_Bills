@@ -100,6 +100,10 @@ export interface TransactionPayload {
 
 export interface TransactionFilters {
   month?: string
+  /** 与 end 成对；YYYY-MM-DD，包含当天全天。 */
+  start?: string
+  /** 与 start 成对；YYYY-MM-DD，包含当天全天。 */
+  end?: string
   account?: number
   kind?: TransactionKind
   q?: string

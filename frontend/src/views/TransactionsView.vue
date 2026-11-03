@@ -267,6 +267,7 @@ onBeforeUnmount(() => {
             format="YYYY年MM月"
             placeholder="全部月份"
             clearable
+            :editable="false"
             aria-label="按月份筛选"
           />
         </div>

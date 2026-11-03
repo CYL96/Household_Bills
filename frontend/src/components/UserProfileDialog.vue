@@ -12,6 +12,7 @@ import {
   updateAuthUser,
 } from '../stores/auth'
 import { displayName } from '../utils/user'
+import { useBackLayer } from '../composables/backNavigation'
 import UserAvatar from './UserAvatar.vue'
 
 const props = defineProps<{
@@ -201,6 +202,9 @@ function closeDialog(): void {
   if (busy.value) return
   emit('update:modelValue', false)
 }
+
+// closeDialog already keeps the dialog open while saving or uploading.
+useBackLayer(() => props.modelValue, closeDialog)
 
 function chooseFile(): void {
   if (busy.value) return

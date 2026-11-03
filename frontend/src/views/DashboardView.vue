@@ -191,6 +191,7 @@ const trendChartLabel = computed(() => {
           placeholder="选择月份"
           :clearable="false"
           class="month-picker"
+          :editable="false"
           aria-label="选择汇总月份"
         />
         <el-button

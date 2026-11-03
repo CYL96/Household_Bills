@@ -32,6 +32,7 @@ import {
   type CategoryKind,
 } from '../stores/categories'
 import { categoryIcon } from '../utils/categoryIcons'
+import { useBackLayer } from '../composables/backNavigation'
 import CategoryEditor from './CategoryEditor.vue'
 
 const props = defineProps<{
@@ -911,6 +912,25 @@ function handleHeaderClose(): void {
   }
   closeDialog()
 }
+
+// 系统返回逐级收起：操作子页 → 操作菜单 → 分类编辑 → 分类设置。
+// 保存中不强制关闭，与顶部关闭按钮的禁用规则一致。
+useBackLayer(
+  () => props.modelValue,
+  () => {
+    if (saving.value) return
+    if (actionTarget.value) {
+      if (sheetMode.value === 'actions') closeActionSheet()
+      else backToActions()
+      return
+    }
+    if (editorState.value) {
+      cancelEditor()
+      return
+    }
+    closeDialog()
+  },
+)
 
 function handleDialogClosed(): void {
   closeEditor()

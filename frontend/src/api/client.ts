@@ -50,6 +50,8 @@ const FIELD_LABELS: Record<string, string> = {
   note: '备注',
   created_by: '录入人',
   month: '月份',
+  start: '开始日期',
+  end: '结束日期',
   avatar: '头像',
   current_password: '当前密码',
   q: '搜索',

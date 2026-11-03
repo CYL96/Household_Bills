@@ -43,7 +43,29 @@ func (a *API) handleListTransactions(c *gin.Context) {
 	}
 
 	filters := store.TransactionFilters{}
-	if monthValue, present := c.GetQuery("month"); present {
+	monthValue, monthPresent := c.GetQuery("month")
+	startValue, startPresent := c.GetQuery("start")
+	endValue, endPresent := c.GetQuery("end")
+	switch {
+	case monthPresent && (startPresent || endPresent):
+		abortFields(c, map[string][]string{"month": {"month 不能与 start、end 同时使用。"}})
+		return
+	case startPresent != endPresent:
+		missing := "start"
+		if startPresent {
+			missing = "end"
+		}
+		abortFields(c, map[string][]string{missing: {"start 和 end 必须同时提供。"}})
+		return
+	case startPresent:
+		rangeStart, rangeEnd, fields := dayRange(startValue, endValue)
+		if fields != nil {
+			abortFields(c, fields)
+			return
+		}
+		filters.MonthStart = rangeStart
+		filters.MonthEnd = rangeEnd
+	case monthPresent:
 		monthStart, monthEnd, valid := monthRange(monthValue)
 		if !valid {
 			abortFields(c, map[string][]string{"month": {"月份格式应为 YYYY-MM。"}})

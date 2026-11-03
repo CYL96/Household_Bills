@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { computed, nextTick, reactive, ref, watch } from 'vue'
-import { ElMessage, ElMessageBox, type FormInstance, type FormRules } from 'element-plus'
+import { ElMessage, type FormInstance, type FormRules } from 'element-plus'
+import { useBackLayer } from '../composables/backNavigation'
+import { confirmWithBack } from '../composables/confirmWithBack'
 import { getErrorMessage } from '../api/client'
 import { createAccount, deleteAccount, updateAccount } from '../api/accounts'
 import type { Account, AccountPayload } from '../api/types'
@@ -36,6 +38,13 @@ const form = reactive({
 const isEditing = computed(() => Boolean(props.account))
 const dialogTitle = computed(() => (isEditing.value ? '编辑资金账户' : '添加资金账户'))
 const busy = computed(() => saving.value || deleting.value)
+
+const ownerSelectRef = ref<{ blur: () => void } | null>(null)
+const ownerSelectOpen = ref(false)
+
+function handleOwnerSelectVisible(visible: boolean): void {
+  ownerSelectOpen.value = visible
+}
 
 const ownerSelection = computed<number>({
   get: () => form.owner ?? PUBLIC_OWNER_VALUE,
@@ -152,12 +161,33 @@ watch(
   () => props.modelValue,
   (open) => {
     if (open) resetForm()
+    else {
+      if (ownerSelectOpen.value) ownerSelectRef.value?.blur()
+      ownerSelectOpen.value = false
+    }
   },
 )
 
 function closeDialog(): void {
   emit('update:modelValue', false)
 }
+
+// 与弹窗关闭按钮一致：保存或删除进行中时不强制关闭。
+useBackLayer(
+  () => props.modelValue,
+  () => {
+    if (!busy.value) closeDialog()
+  },
+)
+
+// 账户归属下拉框覆盖在弹窗之上：返回先收起下拉框，再次返回才关闭弹窗。
+useBackLayer(
+  () => props.modelValue && ownerSelectOpen.value && ownerSelectRef.value !== null,
+  () => {
+    if (busy.value) return
+    ownerSelectRef.value?.blur()
+  },
+)
 
 async function submit(): Promise<void> {
   if (busy.value || !formRef.value) return
@@ -208,18 +238,17 @@ async function handleDelete(): Promise<void> {
 
   // 先锁定按钮状态，确认框打开期间不允许保存或重复触发删除。
   deleting.value = true
-  try {
-    await ElMessageBox.confirm(
-      `删除账户“${account.name}”后无法恢复。只有没有任何收支或转账记录的账户才能删除；删除后，该账户当前余额将从家庭总余额中移除。`,
-      '删除账户',
-      {
-        confirmButtonText: '删除账户',
-        cancelButtonText: '取消',
-        type: 'warning',
-        confirmButtonClass: 'el-button--danger',
-      },
-    )
-  } catch {
+  const confirmed = await confirmWithBack(
+    `删除账户“${account.name}”后无法恢复。只有没有任何收支或转账记录的账户才能删除；删除后，该账户当前余额将从家庭总余额中移除。`,
+    '删除账户',
+    {
+      confirmButtonText: '删除账户',
+      cancelButtonText: '取消',
+      type: 'warning',
+      confirmButtonClass: 'el-button--danger',
+    },
+  )
+  if (!confirmed) {
     deleting.value = false
     return
   }
@@ -247,7 +276,7 @@ async function handleDelete(): Promise<void> {
     width="500px"
     class="ledger-dialog"
     :close-on-click-modal="false"
-    :close-on-press-escape="!busy"
+    :close-on-press-escape="!busy && !ownerSelectOpen"
     :show-close="!busy"
   >
     <el-alert
@@ -291,10 +320,12 @@ async function handleDelete(): Promise<void> {
 
       <el-form-item label="账户归属" prop="owner">
         <el-select
+          ref="ownerSelectRef"
           v-model="ownerSelection"
           class="owner-select"
           size="large"
           aria-label="账户归属"
+          @visible-change="handleOwnerSelectVisible"
         >
           <el-option
             v-for="option in ownerOptions"

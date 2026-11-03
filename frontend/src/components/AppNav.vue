@@ -1,13 +1,10 @@
 <script setup lang="ts">
-import { computed, ref, useId, watch } from 'vue'
+import { computed } from 'vue'
 import type { Component } from 'vue'
 import { useRoute } from 'vue-router'
 import {
-  ArrowDown,
-  Calendar,
   DataAnalysis,
   Odometer,
-  PieChart,
   Tickets,
   UserFilled,
   Wallet,
@@ -44,16 +41,6 @@ function isActive(path: string): boolean {
 }
 
 const statisticsActive = computed(() => isActive('/statistics'))
-const statisticsExpanded = ref(statisticsActive.value)
-const statisticsSubmenuId = useId()
-
-watch(statisticsActive, (active) => {
-  if (active) statisticsExpanded.value = true
-})
-
-function toggleStatistics(): void {
-  statisticsExpanded.value = !statisticsExpanded.value
-}
 </script>
 
 <template>
@@ -85,47 +72,16 @@ function toggleStatistics(): void {
         <span>{{ item.label }}</span>
       </router-link>
 
-      <div class="nav-group">
-        <button
-          type="button"
-          class="nav-link nav-group__toggle"
-          :class="{ 'is-active': statisticsActive }"
-          :aria-expanded="statisticsExpanded"
-          :aria-controls="statisticsSubmenuId"
-          @click="toggleStatistics"
-        >
-          <el-icon :size="18"><DataAnalysis /></el-icon>
-          <span>统计</span>
-          <el-icon class="nav-group__chevron" :size="14"><ArrowDown /></el-icon>
-        </button>
-
-        <div
-          v-show="statisticsExpanded"
-          :id="statisticsSubmenuId"
-          class="nav-sublist"
-        >
-          <router-link
-            to="/statistics/reports"
-            class="nav-link"
-            :class="{ 'is-active': isActive('/statistics/reports') }"
-            :aria-current="isActive('/statistics/reports') ? 'page' : undefined"
-            @click="emit('navigate')"
-          >
-            <el-icon :size="16"><PieChart /></el-icon>
-            <span>报表</span>
-          </router-link>
-
-          <span
-            class="nav-link nav-link--disabled"
-            aria-disabled="true"
-            title="日历暂未开放"
-          >
-            <el-icon :size="16"><Calendar /></el-icon>
-            <span>日历</span>
-            <span class="nav-badge">暂未开放</span>
-          </span>
-        </div>
-      </div>
+      <router-link
+        to="/statistics/reports"
+        class="nav-link"
+        :class="{ 'is-active': statisticsActive }"
+        :aria-current="statisticsActive ? 'page' : undefined"
+        @click="emit('navigate')"
+      >
+        <el-icon :size="18"><DataAnalysis /></el-icon>
+        <span>统计</span>
+      </router-link>
     </nav>
 
     <div class="nav-foot">
@@ -250,81 +206,6 @@ function toggleStatistics(): void {
   background: var(--hb-teal);
 }
 
-.nav-group {
-  display: flex;
-  flex-direction: column;
-}
-
-.nav-group__toggle {
-  width: 100%;
-  border: 0;
-  background: transparent;
-  font: inherit;
-  text-align: left;
-  cursor: pointer;
-}
-
-.nav-group__toggle.is-active::after {
-  display: none;
-}
-
-.nav-group__chevron {
-  margin-left: auto;
-  color: var(--hb-ink-faint);
-  transition: color 0.18s ease, transform 0.18s ease;
-}
-
-.nav-group__toggle:hover .nav-group__chevron {
-  color: var(--hb-teal);
-}
-
-.nav-group__toggle[aria-expanded="true"] .nav-group__chevron {
-  transform: rotate(180deg);
-}
-
-.nav-sublist {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-  margin: 3px 0 2px 22px;
-  padding-left: 10px;
-  border-left: 1px solid var(--hb-line);
-}
-
-.nav-sublist .nav-link {
-  padding: 9px 11px;
-  font-size: 13px;
-}
-
-.nav-sublist .nav-link.is-active::after {
-  right: 11px;
-}
-
-.nav-link--disabled,
-.nav-link--disabled:hover {
-  color: var(--hb-ink-faint);
-  background: transparent;
-  cursor: not-allowed;
-}
-
-.nav-link--disabled .el-icon,
-.nav-link--disabled:hover .el-icon {
-  color: var(--hb-ink-faint);
-}
-
-.nav-badge {
-  margin-left: auto;
-  padding: 1px 7px;
-  color: var(--hb-ink-faint);
-  border: 1px solid var(--hb-line);
-  border-radius: 999px;
-  background: #faf7f0;
-  font-size: 10px;
-  font-weight: 500;
-  letter-spacing: 0.02em;
-  white-space: nowrap;
-}
-
 .nav-foot {
   margin-top: auto;
   padding: 16px;
@@ -359,13 +240,12 @@ function toggleStatistics(): void {
 }
 
 /*
- * On phones the bottom tab bar owns 总览 / 明细 / 统计, so the drawer stops
- * repeating them. Accounts, members and the account footer stay available.
+ * On phones the bottom tab bar owns 总览 / 明细. Keep the statistics entry
+ * in the drawer; the topbar tabs switch between 报表 and 日历.
  * Between 761px and 960px the drawer keeps the full navigation.
  */
 @media (max-width: 760px) {
-  .nav-panel--drawer .nav-link--mobile-primary,
-  .nav-panel--drawer .nav-group {
+  .nav-panel--drawer .nav-link--mobile-primary {
     display: none;
   }
 }

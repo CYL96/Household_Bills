@@ -4,6 +4,7 @@ import { ElMessage, type FormInstance, type FormRules } from 'element-plus'
 import { createUser } from '../api/users'
 import { getErrorMessage } from '../api/client'
 import type { CreateUserPayload, User } from '../api/types'
+import { useBackLayer } from '../composables/backNavigation'
 
 const props = defineProps<{
   modelValue: boolean
@@ -124,6 +125,14 @@ watch(
 function closeDialog(): void {
   emit('update:modelValue', false)
 }
+
+// 与弹窗关闭按钮一致：创建进行中时不强制关闭。
+useBackLayer(
+  () => props.modelValue,
+  () => {
+    if (!saving.value) closeDialog()
+  },
+)
 
 async function submit(): Promise<void> {
   if (saving.value || !formRef.value) return

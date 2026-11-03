@@ -1,10 +1,11 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { ElMessage } from 'element-plus'
 import { Delete, EditPen, Loading } from '@element-plus/icons-vue'
 import { getErrorMessage } from '../api/client'
 import { deleteTransaction } from '../api/transactions'
 import type { Account, Transaction, TransactionKind } from '../api/types'
+import { confirmWithBack } from '../composables/confirmWithBack'
 import { useMediaQuery } from '../composables/useMediaQuery'
 import { markDataChanged } from '../stores/data'
 import { readCategoryEntries } from '../stores/categories'
@@ -400,20 +401,17 @@ async function confirmDelete(transaction: Transaction): Promise<void> {
         transaction.category
       }」记录（${detail}）。删除后账户余额会重新计算，且无法恢复。`
 
-  try {
-    await ElMessageBox.confirm(
-      description,
-      isTransfer ? '删除这笔转账？' : '删除这笔收支？',
-      {
-        confirmButtonText: '删除',
-        cancelButtonText: '取消',
-        type: 'warning',
-        confirmButtonClass: 'el-button--danger',
-      },
-    )
-  } catch {
-    return
-  }
+  const confirmed = await confirmWithBack(
+    description,
+    isTransfer ? '删除这笔转账？' : '删除这笔收支？',
+    {
+      confirmButtonText: '删除',
+      cancelButtonText: '取消',
+      type: 'warning',
+      confirmButtonClass: 'el-button--danger',
+    },
+  )
+  if (!confirmed) return
 
   if (deletingId.value !== null) return
   deletingId.value = transaction.id

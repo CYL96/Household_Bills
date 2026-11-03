@@ -4,6 +4,8 @@ import type { Transaction, TransactionFilters, TransactionPayload } from './type
 export function listTransactions(filters: TransactionFilters = {}): Promise<Transaction[]> {
   const params = new URLSearchParams()
   if (filters.month) params.set('month', filters.month)
+  if (filters.start) params.set('start', filters.start)
+  if (filters.end) params.set('end', filters.end)
   if (filters.account !== undefined) params.set('account', String(filters.account))
   if (filters.kind) params.set('kind', filters.kind)
   if (filters.q) params.set('q', filters.q)
